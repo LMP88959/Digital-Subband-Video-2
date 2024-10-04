@@ -84,6 +84,34 @@ In the root directory of the project (with all the .h and .c files):
 cc -O3 -o dsv2 *.c
 ```
 
+### Zig build system
+
+If you have Zig installed, you can use the build.zig file to compile the project. Building requires Zig version ≥`0.13.0`.
+
+0. Ensure you have Zig & git installed
+
+1. Clone this repo & enter the cloned directory:
+
+```bash
+git clone https://github.com/LMP88959/Digital-Subband-Video-2
+cd Digital-Subband-Video-2
+```
+
+2. Build the binary with Zig:
+
+```bash
+zig build
+```
+> Note: If you'd like to specify a different build target from your host OS/architecture, simply supply the target flag. Example: `zig build -Dtarget=x86_64-linux-gnu`
+
+3. Find the build binary in `zig-out/bin`. You can install it like so:
+
+```bash
+sudo cp zig-out/bin/dsv2 /usr/local/bin
+```
+
+Now, you should be all set to use the compiled `dsv2` binary.
+
 ## Running Encoder
 
 Sample output:
@@ -182,7 +210,7 @@ sample usage: ./dsv2 d -inp=video.dsv -out=decompressed.yuv -out420p=1
 ```
 
 ------
-NOTE: if -inp= and -out= are not specified, it will default to standard in / out (stdin/stdout).  
+NOTE: if -inp= and -out= are not specified, it will default to standard in / out (stdin/stdout).
 Only .yuv (one file containing all the frames) and .y4m files are supported as inputs to the encoder.
 
 ------
@@ -204,10 +232,10 @@ itch.io: https://kingscrook.itch.io/kings-crook
 ------
 ## Example videos:
 
-All videos are encoded at 30fps with a GOP length of 12.  
-The H.264 file sizes were within a few kilobytes of their respective DSV2 file size.  
-H.264 examples were encoded using https://github.com/lieff/minih264 using -speed0 (best quality)  
-DSV2 examples were encoded with -effort=10 (best quality)  
+All videos are encoded at 30fps with a GOP length of 12.
+The H.264 file sizes were within a few kilobytes of their respective DSV2 file size.
+H.264 examples were encoded using https://github.com/lieff/minih264 using -speed0 (best quality)
+DSV2 examples were encoded with -effort=10 (best quality)
 
 minih264:
 
@@ -230,4 +258,3 @@ DSV2:
 
 
 https://github.com/user-attachments/assets/f9e07286-a8f3-4925-99c0-8754257bc6d5
-
