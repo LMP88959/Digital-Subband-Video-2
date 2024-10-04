@@ -194,9 +194,10 @@ This codec is by no means fully optimized, so there is a lot of room for perform
 ## License
 
 The accompanying software was designed and written by EMMIR, 2024 of Envel Graphics.
-No responsibility is assumed by the author.
+No responsibility is assumed by the author.  
 
-Feel free to use the code in any way you would like, however, if you release anything with it, a comment in your code/README document saying where you got this code would be a nice gesture but it is not mandatory.
+Feel free to use the code in any way you would like, however, if you release anything with it, a comment in your code/README document saying where you got this code would be a nice gesture but it is not mandatory.  
+
 The software is provided "as is", without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose and noninfringement. In no event shall the authors or copyright holders be liable for any claim, damages or other liability, whether in an action of contract, tort or otherwise, arising from, out of or in connection with the software or the use or other dealings in the software.
 
 ------
