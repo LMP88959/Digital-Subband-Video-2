@@ -5,6 +5,22 @@ DSV2 is a lossy video codec using wavelets and block-based motion compensation.
 It is designed for medium-low to medium-high bitrates.
 Comparable to MPEG-4 Part 2 and Part 10 (H.264) (P frames only) in terms of efficiency and quality.
 
+------
+## Example comparison (More can be found at the bottom of the README):
+
+minih264:
+
+
+https://github.com/user-attachments/assets/ee54487a-dfb5-4b75-9557-ba6b66a98d59
+
+
+DSV2:
+
+
+https://github.com/user-attachments/assets/7ba5a239-4cc9-4852-bb2f-74cb59e05333
+
+------
+
 ## DSV2 Features (refer to PDF in repo for more detail)
 
 - compression using multiresolution subband analysis instead of DCT
@@ -200,19 +216,6 @@ All videos are encoded at 30fps with a GOP length of 12.
 The H.264 file sizes were within a few kilobytes of their respective DSV2 file size.  
 H.264 examples were encoded using https://github.com/lieff/minih264 using -speed0 (best quality)  
 DSV2 examples were encoded with -effort=10 (best quality)  
-
-minih264:
-
-
-https://github.com/user-attachments/assets/ee54487a-dfb5-4b75-9557-ba6b66a98d59
-
-
-DSV2:
-
-
-https://github.com/user-attachments/assets/7ba5a239-4cc9-4852-bb2f-74cb59e05333
-
-------
 
 minih264:
 
