@@ -56,7 +56,7 @@ cpyzero(uint8_t *dec, uint8_t *ref, int dw, int rw, int w, int h)
                      abs(i2 - avg) < thresh)
 
 #define TESTINTER_1 !intra && (abs(i0 - e0) < ntt)
-#define TESTINTER_2 abs((i0 - i1) << 2) < ntt && abs((e0 - e1) << 2) < ntt
+#define TESTINTER_2 (abs(i0 - i1) << 2) < ntt && (abs(e0 - e1) << 2) < ntt
 #define TESTINTER_3 abs(i0 - i1) >= ntt || abs(e0 - e1) >= ntt
 
 static int
