@@ -21,6 +21,8 @@ https://github.com/user-attachments/assets/7ba5a239-4cc9-4852-bb2f-74cb59e05333
 
 ------
 
+### Note PDFs are likely to be out of date. They reflect the codec as it was when it was first uploaded here.
+
 ## DSV2 Features (refer to PDF in repo for more detail)
 
 - compression using multiresolution subband analysis instead of DCT
