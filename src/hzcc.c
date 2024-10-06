@@ -84,13 +84,17 @@ fix_quant(int q, DSV_FMETA *fm)
 static int
 lfquant(DSV_FMETA *fm, int q, int s)
 {
+    if (fm->cur_plane == 0) {
+        q = dyn_adjust(q, 8);
+    } else {
+        q = dyn_adjust(q, 4);
+    }
     if (fm->isP) {
         if (fm->cur_plane == 0) {
-            return dyn_adjust(q, 8) / 8;
+            return q / 8;
         }
-        return dyn_adjust(q, 4) / 4;
+        return q / 4;
     }
-    q = dyn_adjust(q, 8);
     if (s != HH) { /* quantize HH more */
         q /= 2;
     }
