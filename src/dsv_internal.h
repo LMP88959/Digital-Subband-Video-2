@@ -26,9 +26,6 @@ extern "C" {
 #include <stdarg.h>
 #include <limits.h>
 
-/* required because snprintf isn't strictly c89. no `restrict', that's not c89 either */
-int snprintf(char *, size_t, const char *, ...);
-
 #include "dsv.h"
 
 /* subsections of the encoded data */
