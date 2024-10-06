@@ -376,7 +376,10 @@ get_param(char *argv)
     for (i = 0; params[i].prefix != NULL; i++) {
         struct PARAM *par = &params[i];
         char buf[512];
-        snprintf(buf, sizeof(buf) - 1, "%s=", par->prefix);
+        if (strlen(par->prefix) >= sizeof(buf) - 2) continue;
+
+        sprintf(buf, "%s=", par->prefix);
+
         if (!prefixcmp(buf, &p)) {
             continue;
         }
