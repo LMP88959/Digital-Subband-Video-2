@@ -2,12 +2,17 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseFast });
+    const strip = b.option(bool, "strip", "Whether to strip symbols from the binary, defaults to false") orelse false;
 
     // Create the executable
     const bin = b.addExecutable(.{
         .name = "dsv2",
         .target = target,
-        .optimize = .ReleaseFast,
+        // uses libc
+        .link_libc = true,
+        .optimize = optimize,
+        .strip = strip,
     });
 
     // Add C source files
@@ -26,12 +31,12 @@ pub fn build(b: *std.Build) void {
             "src/util.c",
         },
         .flags = &.{
-            "-std=c99",
-            "-O3",
+            "-std=c89",
+            "-Wall",
+            "-Wextra",
+            "-Wpedantic",
+            "-Werror",
         },
     });
-
-    // Link libc
-    bin.linkLibC();
     b.installArtifact(bin);
 }
