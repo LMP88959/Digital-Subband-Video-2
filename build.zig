@@ -4,6 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseFast });
     const strip = b.option(bool, "strip", "Whether to strip symbols from the binary, defaults to false") orelse false;
+    const linkage = b.option(std.builtin.LinkMode, "linkage", "How to link, defaults to static") orelse .static;
 
     // Create the executable
     const bin = b.addExecutable(.{
@@ -13,6 +14,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
         .optimize = optimize,
         .strip = strip,
+        .linkage = linkage,
     });
 
     // Add C source files
