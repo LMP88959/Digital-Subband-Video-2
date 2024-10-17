@@ -74,6 +74,7 @@ typedef struct {
     int do_scd; /* scene change detection */
     int do_temporal_aq; /* toggle temporal adaptive quantization for I frames */
     int do_psy; /* enable psychovisual optimizations */
+    int do_dark_intra_boost; /* boost quality in dark intra frames */
 
     /* threshold for skip block determination. -1 = disable
     Larger value = more likely to mark it as skipped */
