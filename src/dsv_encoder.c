@@ -103,6 +103,27 @@ qual_to_qp(int v)
     return ((a * (3 - frac) + frac * b) / 3);
 }
 
+static unsigned
+frame_luma_avg(DSV_FRAME *dst)
+{
+    int i, j;
+    unsigned avg = 0;
+    DSV_PLANE *d = dst->planes + 0;
+
+    for (j = 0; j < d->h; j++) {
+        uint8_t *dp;
+        unsigned rav = 0;
+
+        dp = DSV_GET_LINE(d, j);
+
+        for (i = 0; i < d->w; i++) {
+            rav += dp[i];
+        }
+        avg += rav / d->w;
+    }
+    return avg / d->h;
+}
+
 static void
 quality2quant(DSV_ENCODER *enc, DSV_ENCDATA *d)
 {
@@ -156,7 +177,13 @@ quality2quant(DSV_ENCODER *enc, DSV_ENCDATA *d)
         low_p = enc->avg_P_frame_q - RC_QUAL_PCT(4);
         low_p = CLAMP(low_p, enc->min_quality, enc->max_quality);
         minq = d->params.has_ref ? low_p : enc->min_I_frame_quality;
-
+        if (enc->do_dark_intra_boost && !d->params.has_ref) {
+            unsigned la = frame_luma_avg(d->pyramid[enc->pyramid_levels - 1]);
+            if (la < 80) {
+                int step = (80 - la) / 5;
+                q += CLAMP(step, 5, 16);
+            }
+        }
         q = CLAMP(q, minq, enc->max_quality);
         q = CLAMP(q, 0, DSV_RC_QUAL_MAX); /* double validate range */
         DSV_INFO(("RC Q = %d delta = %d bpf: %d, avg: %d, dif: %d",
@@ -860,6 +887,7 @@ dsv_enc_init(DSV_ENCODER *enc)
     enc->block_size_override_y = -1;
     enc->do_temporal_aq = 1;
     enc->do_psy = 1;
+    enc->do_dark_intra_boost = 1;
 }
 
 extern void
