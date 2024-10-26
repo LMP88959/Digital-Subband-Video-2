@@ -66,6 +66,41 @@ chroma_analysis(CHROMA_PSY *c, int y, int u, int v)
 #define HP_STRIDE (SP_DIM * 2)
 #define QP_STRIDE (SP_DIM * 4)
 
+#define SIMPLE_SAD 0
+#if SIMPLE_SAD
+#define SADCMP(d) abs(d)
+#define SADRET(a, w, h) (a)
+#else
+/* RMSE */
+#define SADCMP(d) ((d) * (d))
+#define SADRET(a, w, h) iisqrt((a))*(w)*(h)/(((w)+(h)+1)>>1)
+#endif
+
+static int
+iisqrt(unsigned int n)
+{
+    unsigned int pos, res, rem;
+
+    res = 0;
+    pos = 1 << 30;
+    rem = n;
+
+    while (pos > rem) {
+        pos >>= 2;
+    }
+    while (pos) {
+        unsigned int dif = res + pos;
+        res >>= 1;
+        if (rem >= dif) {
+            rem -= dif;
+            res += pos;
+        }
+        pos >>= 2;
+    }
+    return ((int) res);
+}
+
+/* NOTE: if SIMPLE_SAD is not set, these are RMSE functions, not SAD */
 #define MAKE_SAD(w)                                                           \
 static int                                                                    \
 sad_ ##w## xh(uint8_t *a, int as, uint8_t *b, int bs, int h)                  \
@@ -73,12 +108,13 @@ sad_ ##w## xh(uint8_t *a, int as, uint8_t *b, int bs, int h)                  \
     int i, j, acc = 0;                                                        \
     for (j = 0; j < h; j++) {                                                 \
         for (i = 0; i < w; i++) {                                             \
-            acc += abs(a[i] - b[i]);                                          \
+            int dif = (a[i] - b[i]);                                          \
+            acc += SADCMP(dif);                                               \
         }                                                                     \
         a += as;                                                              \
         b += bs;                                                              \
     }                                                                         \
-    return acc;                                                               \
+    return SADRET(acc, w, h);                                                 \
 }
 
 MAKE_SAD(8)
@@ -88,16 +124,18 @@ MAKE_SAD(32)
 static int
 sad_wxh(uint8_t *a, int as, uint8_t *b, int bs, int w, int h)
 {
-    int i, j, acc = 0;
+    int i, j;
+    unsigned acc = 0;
 
     for (j = 0; j < h; j++) {
         for (i = 0; i < w; i++) {
-            acc += abs(a[i] - b[i]);
+            int dif = (a[i] - b[i]);
+            acc += SADCMP(dif);
         }
         a += as;
         b += bs;
     }
-    return acc;
+    return SADRET(acc, w, h);
 }
 
 static int
@@ -164,77 +202,119 @@ invalid_block(DSV_FRAME *f, int x, int y, int sx, int sy)
 }
 
 /*
- * see if this block would not be able to be represented properly as intra.
- *
- * returns 1 if inter is better
+ * determine if this block needs EPRM
+ * returns average luma of MV(0,0) of reconstructed block
  */
 static unsigned
-is_inter_better(DSV_PLANE *sp, DSV_PLANE *rp, int w, int h, DSV_MV *mv)
+calc_EPRM(
+        DSV_PLANE *sp, DSV_PLANE *rp, DSV_PLANE *mvrp,
+        int w, int h, int *eprmi, int *eprmr)
 {
     int i, j;
     int ravg, prd;
     int clipi = 0;
-    uint8_t *ref = rp->data;
+    int clipr = 0;
+    uint8_t *mvr = mvrp->data;
+    uint8_t *rec = rp->data;
     uint8_t *src = sp->data;
 
     ravg = 0;
     for (j = 0; j < h; j++) {
         for (i = 0; i < w; i++) {
-            ravg += ref[i];
+            ravg += rec[i];
         }
-        ref += rp->stride;
+        rec += rp->stride;
     }
     ravg /= (w * h);
-    ref = rp->data;
+    rec = rp->data;
 
-    if (mv->u.all == 0) {
-        unsigned sadr = 0;
-        unsigned sadi = 0;
-        int clipr = 0;
-        /* consider inter zero */
-        for (j = 0; j < h; j++) {
-            for (i = 0; i < w; i++) {
-                int spx, residual, recon, dif;
+    *eprmi = 0;
+    *eprmr = 0;
 
-                spx = src[i];
-                /* this logic can totally be optimized but
-                 * I am a bit too lazy at the moment */
-                residual = clamp_u8((spx - ravg) + 128);
-                recon = clamp_u8((ravg + residual) - 128);
-                dif = abs(recon - spx);
-                sadi += dif * dif;
-
-                residual = clamp_u8((spx - ref[i]) + 128);
-                recon = clamp_u8((ref[i] + residual) - 128);
-                dif = abs(recon - spx);
-                sadr += dif * dif;
-
-                prd = (spx - ref[i]) + 128;
-                if (prd < 0 || prd > 255) {
-                    clipr = 1;
-                }
-            }
-            src += sp->stride;
-            ref += rp->stride;
-        }
-        if (sadr < sadi) {
-            /* inter zero pred was better */
-            mv->eprm = clipr;
-            return 1;
-        }
-    }
     for (j = 0; j < h; j++) {
         for (i = 0; i < w; i++) {
-            prd = (src[i] - ravg) + 128;
-            if (prd < 0 || prd > 255) {
-                clipi = 1;
-                goto done;
+            /* see if MV pred or intra pred would clip and require EPRM */
+            if (!clipr) {
+                prd = (src[i] - mvr[i]) + 128;
+                clipr |= (prd < 0 || prd > 255);
+            }
+            if (!clipi) {
+                prd = (src[i] - ravg) + 128;
+                clipi |= (prd < 0 || prd > 255);
+            }
+            if (clipi && clipr) {
+                goto eprm_done;
             }
         }
         src += sp->stride;
+        mvr += mvrp->stride;
     }
-done:
-    mv->eprm = clipi;
+eprm_done:
+    *eprmi = clipi;
+    *eprmr = clipr;
+    return ravg;
+}
+
+/*
+ * if the MV is full-pel, determine if the inter
+ * prediction is better than the intra prediction
+ *
+ * returns 1 if inter is better
+ */
+static unsigned
+is_inter_better(
+        DSV_PLANE *sp, DSV_PLANE *mvrp,
+        int ravg,
+        int w, int h,
+        DSV_MV *mv,
+        int eprmi, int eprmr)
+{
+    int i, j;
+    uint8_t *mvr = mvrp->data;
+    uint8_t *src = sp->data;
+    unsigned sser = 0;
+    unsigned ssei = 0;
+    int is_subpel = (mv->u.mv.x & 3) || (mv->u.mv.y & 3);
+
+    /* full-pel is easy to check since there's no interpolation involved */
+    if (is_subpel) {
+        return 0;
+    }
+
+    mvr = mvrp->data;
+    for (j = 0; j < h; j++) {
+        for (i = 0; i < w; i++) {
+            int spx, residual, recon, dif;
+
+            spx = src[i];
+            if (eprmi) {
+                residual = clamp_u8((spx - ravg) / 2 + 128);
+                recon = clamp_u8(ravg + (residual - 128) * 2);
+            } else {
+                residual = clamp_u8((spx - ravg) + 128);
+                recon = clamp_u8((ravg + residual) - 128);
+            }
+            dif = (recon - spx);
+            ssei += dif * dif;
+
+            if (eprmr) {
+                residual = clamp_u8((spx - mvr[i]) / 2 + 128);
+                recon = clamp_u8(mvr[i] + (residual - 128) * 2);
+            } else {
+                residual = clamp_u8((spx - mvr[i]) + 128);
+                recon = clamp_u8((mvr[i] + residual) - 128);
+            }
+            dif = (recon - spx);
+            sser += dif * dif;
+        }
+        src += sp->stride;
+        mvr += mvrp->stride;
+    }
+    if (sser < ssei) {
+        /* inter full-pel pred was better than intra */
+        return 1;
+    }
+
     return 0;
 }
 
@@ -264,9 +344,7 @@ block_tex(uint8_t *a, int as, int w, int h)
         prevptr = ptr;
         ptr += as;
     }
-    sh /= (w * h);
-    sv /= (w * h);
-    return MAX(sh, sv);
+    return MAX(sh, sv) / (w * h);
 }
 
 static int
@@ -317,6 +395,152 @@ block_span(uint8_t *a, int as, int w, int h)
         aptr += as;
     }
     return abs(minv - maxv);
+}
+
+static int
+quant_tex(uint8_t *a, int as, int w, int h)
+{
+    int i, j;
+    int prev;
+    int px;
+    unsigned sh = 0;
+    unsigned sv = 0;
+    uint8_t *ptr;
+    uint8_t *prevptr;
+
+    ptr = a;
+    j = h;
+    prevptr = ptr;
+    while (j-- > 0) {
+        i = w;
+        prev = ptr[i - 1] >> 4;
+        while (i-- > 0) {
+            int d;
+            /* squared tex */
+            px = ptr[i] >> 4;
+            d = (px - prev);
+            sh += d * d;
+            d = (px - (prevptr[i] >> 4));
+            sv += d * d;
+            prev = px;
+        }
+        prevptr = ptr;
+        ptr += as;
+    }
+    return iisqrt(MAX(sh, sv)) / ((w + h + 1) >> 1);
+}
+
+/* number of most significant bits of an 8-bit
+ * luma sample to include in the histogram */
+#define HISTBITS 4
+#define NHIST (1 << HISTBITS)
+
+static unsigned
+hist_dif(uint16_t histA[NHIST], uint16_t histB[NHIST])
+{
+    int i;
+    unsigned d = 0;
+
+    for (i = 0; i < NHIST; i++) {
+        int dif = (int) histA[i] - (int) histB[i];
+        d += dif * dif;
+    }
+    return iisqrt(d / NHIST);
+}
+
+static unsigned
+block_peaks(uint8_t *a, int as, int w, int h,
+        uint8_t peaks[NHIST], uint16_t hist[NHIST])
+{
+    int x, y;
+    int maxv = 0;
+    int npeaks = 0;
+    int quant16;
+    uint8_t *sp = a;
+    int avg = 0;
+
+    memset(hist, 0, sizeof(uint16_t) * NHIST);
+    for (y = 0; y < h; y++) {
+        for (x = 0; x < w; x++) {
+            avg += a[x + y * as];
+        }
+    }
+    avg /= (w * h);
+    if (avg == 0) {
+        avg = 1;
+    }
+    quant16 = ((1 << (HISTBITS - 1)) << 16) / avg;
+    /* 2x downsample */
+    w /= 2;
+    h /= 2;
+    for (y = 0; y < h; y++) {
+        int bp = 0;
+        for (x = 0; x < w; x++) {
+            int p1, p2, p3, p4, ds, hi;
+            p1 = sp[bp];
+            p2 = sp[bp + 1];
+            p3 = sp[bp + as];
+            p4 = sp[bp + 1 + as];
+            ds = ((p1 + p2 + p3 + p4 + 2) >> 2);
+            bp += 2;
+            hi = ds * quant16 >> 16;
+            hist[CLAMP(hi, 0, (NHIST - 1))]++;
+        }
+        sp += 2 * as;
+    }
+    avg = 0;
+    for (x = 0; x < NHIST; x++) {
+        maxv = MAX(maxv, hist[x]);
+        avg += hist[x];
+    }
+    avg /= NHIST;
+    maxv >>= 2;
+    for (x = 0; x < NHIST; x++) {
+        int c, is_peak;
+
+        c = hist[x];
+        is_peak = 1;
+        if (x > 0) {
+            is_peak &= (c > (hist[x - 1]));
+        }
+        if (x < (NHIST - 1)) {
+            is_peak &= (c > (hist[x + 1]));
+        }
+        is_peak &= (c > maxv) || (c > avg);
+        if (is_peak) {
+            peaks[npeaks++] = x;
+        }
+    }
+
+    return npeaks;
+}
+
+/* my algorithm for determining if a block contains 'visual edge(s)' as a way
+ * to roughly model complexity masking and what features we notice easily.
+ *
+ * A visual edge is an edge that is substantial and clean.
+ * A visual edge is not necessarily the same as an edge obtained from classical
+ * edge detection algorithms like the Canny and Sobel methods.
+ *
+ * Algorithm description:
+ *   1. Create histogram of quantized samples in block.
+ *   2. Find the most frequent quantized sample.
+ *   3. Determine the number of peaks in the histogram, P.
+ *   4. Compute texture of quantized samples, T.
+ *
+ *   If there are one or few P, the block has a relatively small
+ *   number of significantly different shades, so it is 'substantial'.
+ *   If T is small, then the block is not very noisy, so it is 'clean'.
+ */
+static unsigned
+block_has_vis_edge(uint8_t *a, int as, int w, int h)
+{
+    uint16_t hist[NHIST];
+    uint8_t peaks[NHIST];
+    int npeaks;
+
+    npeaks = block_peaks(a, as, w, h, peaks, hist);
+    return (npeaks > 1 && npeaks < 4) && quant_tex(a, as, w, h) <= 2;
 }
 
 static void
@@ -376,27 +600,33 @@ c_average(DSV_PLANE *p, int x, int y, int w, int h, int *uavg, int *vavg)
 static int
 hpsad(uint8_t *a, int as, uint8_t *b)
 {
-    int i, j, acc = 0;
+    int i, j;
+    unsigned acc = 0;
+
     for (j = 0; j < SP_SAD_SZ; j++) {
         for (i = 0; i < SP_SAD_SZ; i++) {
-            acc += abs(a[i] - b[HP_OFFSET(i, j)]);
+            int d = (a[i] - b[HP_OFFSET(i, j)]);
+            acc += SADCMP(d);
         }
         a += as;
     }
-    return acc;
+    return SADRET(acc, SP_SAD_SZ, SP_SAD_SZ);
 }
 
 static int
 qpsad(uint8_t *a, int as, uint8_t *b)
 {
-    int i, j, acc = 0;
+    int i, j;
+    unsigned acc = 0;
+
     for (j = 0; j < SP_SAD_SZ; j++) {
         for (i = 0; i < SP_SAD_SZ; i++) {
-            acc += abs(a[i] - b[QP_OFFSET(i, j)]);
+            int d = (a[i] - b[QP_OFFSET(i, j)]);
+            acc += SADCMP(d);
         }
         a += as;
     }
-    return acc;
+    return SADRET(acc, SP_SAD_SZ, SP_SAD_SZ);
 }
 
 /* D.1 Luma Half-Pixel Filter */
@@ -491,6 +721,287 @@ mv_cost(DSV_MV *vecs, DSV_PARAMS *p, int i, int j, int mx, int my)
     int px, py;
     dsv_movec_pred(vecs, p, i, j, &px, &py);
     return seg_bits(mx - px) + seg_bits(my - py);
+}
+
+static int
+detail_subblocks(
+        DSV_PARAMS *params, DSV_MV *mv,
+        DSV_PLANE *srcp, DSV_PLANE *zrecp,
+        int bw, int bh, int tex_src)
+{
+    int f, g, sbw, sbh, mask_index;
+    uint8_t masks[4] = {
+            ~DSV_MASK_INTRA00,
+            ~DSV_MASK_INTRA01,
+            ~DSV_MASK_INTRA10,
+            ~DSV_MASK_INTRA11,
+    };
+
+    /* do extra checks for 4 quadrants */
+    mv->submask = DSV_MASK_ALL_INTRA;
+    /* don't give low texture intra blocks the opportunity to cause trouble */
+    if (params->effort < 5 || tex_src < 2) {
+        goto skip;
+    }
+    sbw = bw / 2;
+    sbh = bh / 2;
+    mask_index = 0;
+    for (g = 0; g <= sbh; g += sbh) {
+        for (f = 0; f <= sbw; f += sbw) {
+            if (inter_zero_good(srcp->data + (f + g * srcp->stride), srcp->stride,
+                    zrecp->data + (f + g * zrecp->stride), zrecp->stride, sbw, sbh)) {
+                /* mark as inter with zero vector */
+                mv->submask &= masks[mask_index];
+            }
+            mask_index++;
+        }
+    }
+
+skip:
+    if (mv->submask) {
+        mv->mode = DSV_MODE_INTRA;
+        return 1;
+    }
+    return 0;
+}
+
+static int
+cleanup_subblocks(
+        DSV_PARAMS *params, DSV_MV *mv,
+        int mad, int var_d,
+        int var_src, int tex_src, int avg_src,
+        DSV_PLANE *sp, DSV_PLANE *rcp,
+        DSV_PLANE *srcp, DSV_PLANE *zrecp,
+        int bw, int bh,
+        int cbx, int cby,
+        int cbw, int cbh)
+{
+    int f, g, sbw, sbh, bit_index, nlsb = 0, ncsb = 0;
+    int luma_vars[4];
+    int luma_vardif[4];
+    int luma_avgs[4];
+    int skip_luma = 0;
+    uint8_t bits[4] = {
+            DSV_MASK_INTRA00,
+            DSV_MASK_INTRA01,
+            DSV_MASK_INTRA10,
+            DSV_MASK_INTRA11,
+    };
+    mv->submask = 0;
+
+    if (params->effort < 6) {
+        return 0;
+    }
+
+    if (mad < MAX(tex_src, 4) || (mad < 16 && var_src > 0)) {
+        skip_luma = 1;
+    }
+    sbw = bw / 2;
+    sbh = bh / 2;
+    bit_index = 0;
+
+    for (g = 0; g <= sbh; g += sbh) {
+        for (f = 0; f <= sbw; f += sbw) {
+            uint8_t *src_d, *rec_d;
+            unsigned vs, avs;
+            unsigned vr, avr;
+            uint16_t histS[NHIST];
+            uint16_t histR[NHIST];
+
+            src_d = srcp->data + (f + g * srcp->stride);
+            rec_d = zrecp->data + (f + g * zrecp->stride);
+
+            vs = block_var(src_d, srcp->stride, sbw, sbh, &avs);
+            vr = block_var(rec_d, zrecp->stride, sbw, sbh, &avr);
+            luma_vars[bit_index] = vs;
+            luma_vardif[bit_index] = (int) vs - (int) vr;
+            luma_avgs[bit_index] = avs;
+            if (!skip_luma) {
+                int npeaksS, npeaksR;
+                int ts, tr;
+                int histdif;
+                int significant;
+                uint8_t peaksS[NHIST], peaksR[NHIST];
+
+                ts = block_tex(src_d, srcp->stride, sbw, sbh);
+                tr = block_tex(rec_d, zrecp->stride, sbw, sbh);
+                npeaksS = block_peaks(src_d, srcp->stride, sbw, sbh, peaksS, histS);
+                npeaksR = block_peaks(rec_d, zrecp->stride, sbw, sbh, peaksR, histR);
+                histdif = hist_dif(histS, histR);
+                significant = (tr - ts) >= 8
+                        || (npeaksS < 4 && npeaksR > 3 * npeaksS / 2);
+                if (significant && (histdif > 2)) {
+                    int lo, hi, do_intra = 1;
+                    int is_subpel = (mv->u.mv.x & 3) || (mv->u.mv.y & 3);
+                    if (npeaksS && npeaksR) {
+                        /* low/high peak differences between blocks */
+                        lo = abs((int) peaksS[0] - (int) peaksR[0]);
+                        hi = abs((int) peaksS[MAX(npeaksS - 1, 0)] - (int) peaksR[MAX(npeaksR - 1, 0)]);
+                        do_intra = is_subpel ? (hi > 1 && lo > 1) : hi > 0 && lo > 0;
+                    } else if (npeaksS == 0 && npeaksR == 0) {
+                        do_intra = 0;
+                    }
+                    if (do_intra) {
+                        mv->submask |= bits[bit_index];
+                        nlsb++;
+                    }
+                }
+            }
+            bit_index++;
+        }
+    }
+    if (avg_src <= LUMA_CHROMA_CUTOFF || (var_src > var_d)) {
+       goto skip_chroma;
+    }
+    sbw = cbw / 2;
+    sbh = cbh / 2;
+    bit_index = 0;
+
+    for (g = 0; g <= sbh; g += sbh) {
+        for (f = 0; f <= sbw; f += sbw) {
+            unsigned ud, vd;
+            int usa, vsa, ura, vra; /* chroma src/rec averages */
+            int downshift;
+            CHROMA_PSY spsy;
+
+            if (mv->submask & bits[bit_index]) {
+                continue; /* skip subblocks that are already intra */
+            }
+            if (luma_vars[bit_index] > 3 || luma_vardif[bit_index] <= 1) {
+                /* likely not worth messing up the luma if the chroma is bad in these cases */
+                continue;
+            }
+            c_average(sp, cbx + f, cby + g, sbw, sbh, &usa, &vsa);
+            c_average(rcp, cbx + f, cby + g, sbw, sbh, &ura, &vra);
+            chroma_analysis(&spsy, luma_avgs[bit_index], usa, vsa);
+            if (spsy.skinnish) {
+                downshift = 3; /* less lenient with skin tones */
+            } else if (spsy.hifreq) {
+                downshift = 5; /* more lenient with high frequency colors */
+            } else {
+                downshift = 4;
+            }
+            ud = abs(usa - ura) >> downshift;
+            vd = abs(vsa - vra) >> downshift;
+            if (ud || vd) { /* if chroma averages were significantly different */
+                mv->submask |= bits[bit_index];
+                ncsb += ud + vd;
+            }
+            bit_index++;
+        }
+    }
+skip_chroma:
+    /* combine luma and chroma test scores */
+    if ((nlsb + (ncsb / (skip_luma ? 1 : 2))) > 0) {
+        mv->mode = DSV_MODE_INTRA;
+        return 1;
+    }
+    mv->submask = 0;
+    return 0;
+}
+
+static int
+subpixel_ME(
+        DSV_PARAMS *params,
+        DSV_MV *mf, /* motion field */
+        DSV_MV *mv, /* current full-pixel motion vector */
+        DSV_FRAME *src, DSV_FRAME *ref,
+        int i, int j,
+        int best,
+        int bx, int by, int bw, int bh)
+{
+    /* for subpixel motion vector rate/distortion decisions */
+#define HMV_IMPORTANCE 3 /* half pel */
+#define QMV_IMPORTANCE 2 /* quarter pel */
+#define SPEL_NSEARCH 8 /* search points for sub-pel search */
+    static int xh[SPEL_NSEARCH] = { 1, -1, 0,  0, -1,  1, -1, 1 };
+    static int yh[SPEL_NSEARCH] = { 0,  0, 1, -1, -1, -1,  1, 1 };
+    static uint8_t tmp[(2 + HP_STRIDE) * (2 + HP_STRIDE)];
+    DSV_PLANE srcp_h, refp_h;
+    int xx, yy, m, k, score;
+    int best_hp;
+    uint8_t *tmphp;
+    unsigned yarea = bw * bh;
+
+    /* scale down to match area */
+    best_hp = best * (SP_SAD_SZ * SP_SAD_SZ) / yarea;
+    xx = bx + ((bw >> 1) - (SP_SAD_SZ / 2));
+    yy = by + ((bh >> 1) - (SP_SAD_SZ / 2));
+    dsv_plane_xy(src, &srcp_h, 0, xx, yy);
+    dsv_plane_xy(ref, &refp_h, 0,
+            xx + mv->u.mv.x - 1, /* offset by 1 in x and y so */
+            yy + mv->u.mv.y - 1);/* we can do negative hpel */
+    m = -1;
+    hpel(tmp, refp_h.data, refp_h.stride);
+    /* start at fullpel (1, 1) */
+    tmphp = tmp + HP_OFFSET(1, 1);
+    for (k = 0; k < SPEL_NSEARCH; k++) {
+        int evx, evy;
+        score = hpsad(srcp_h.data, srcp_h.stride,
+                tmphp + xh[k] + yh[k] * HP_STRIDE);
+
+        evx = ((mv->u.mv.x * 2) + xh[k]) * 2;
+        evy = ((mv->u.mv.y * 2) + yh[k]) * 2;
+        score += mv_cost(mf, params, i, j, evx, evy) << HMV_IMPORTANCE;
+        if (best_hp > score) {
+            best_hp = score;
+            m = k;
+        }
+    }
+    mv->u.mv.x *= 2;
+    mv->u.mv.y *= 2;
+    if (m != -1) {
+        mv->u.mv.x += xh[m];
+        mv->u.mv.y += yh[m];
+        best = best_hp * yarea / (SP_SAD_SZ * SP_SAD_SZ);
+    }
+    /* try qpel */
+    if (params->effort >= 9 ||
+            (params->effort == 8 &&
+                    abs(mv->u.mv.x) <= QPEL_CHECK_THRESH &&
+                    abs(mv->u.mv.y) <= QPEL_CHECK_THRESH)) {
+        static uint8_t tmpq[(4 + QP_STRIDE) * (QP_STRIDE + 4)];
+        uint8_t *tmpqp;
+        int best_qp;
+        int qpx, qpy;
+        /* start at (1, 1) + potential hpel best */
+        qpx = 4;
+        qpy = 4;
+        if (m != -1) {
+            qpx += xh[m] * 2;
+            qpy += yh[m] * 2;
+            best_qp = best_hp;
+        } else {
+            best_qp = best * (SP_SAD_SZ * SP_SAD_SZ) / yarea;
+        }
+        m = -1;
+
+        qpel(tmpq, tmp);
+        tmpqp = tmpq + qpx + qpy * QP_STRIDE;
+        for (k = 0; k < SPEL_NSEARCH; k++) {
+            int evx, evy;
+            score = qpsad(srcp_h.data, srcp_h.stride,
+                    tmpqp + xh[k] + yh[k] * QP_STRIDE);
+            evx = (mv->u.mv.x * 2) + xh[k];
+            evy = (mv->u.mv.y * 2) + yh[k];
+            score += mv_cost(mf, params, i, j, evx, evy) << QMV_IMPORTANCE;
+            if (best_qp > score) {
+                best_qp = score;
+                m = k;
+            }
+        }
+        mv->u.mv.x *= 2;
+        mv->u.mv.y *= 2;
+        if (m != -1) {
+            mv->u.mv.x += xh[m];
+            mv->u.mv.y += yh[m];
+            best = best_qp * yarea / (SP_SAD_SZ * SP_SAD_SZ);
+        }
+    } else {
+        mv->u.mv.x *= 2;
+        mv->u.mv.y *= 2;
+    }
+    return best;
 }
 
 static int
@@ -669,104 +1180,15 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
             mv->u.mv.y = dy * (1 << level);
             /* subpel refine at base level */
             if (level == 0) {
-/* for subpixel motion vector rate/distortion decisions */
-#define HMV_IMPORTANCE 3 /* half pel */
-#define QMV_IMPORTANCE 2 /* quarter pel */
-
-#define SPEL_NSEARCH 8 /* search points for sub-pel search */
-                static int xh[SPEL_NSEARCH] = { 1, -1, 0,  0, -1,  1, -1, 1 };
-                static int yh[SPEL_NSEARCH] = { 0,  0, 1, -1, -1, -1,  1, 1 };
-                unsigned yarea = bw * bh;
                 int skip_subpel = 0;
+
                 if (params->effort < 10) {
                     DSV_PLANE skip_refp;
                     dsv_plane_xy(ref, &skip_refp, 0, bx + mv->u.mv.x, by + mv->u.mv.y);
                     skip_subpel = fastsad(srcp.data, srcp.stride, skip_refp.data, skip_refp.stride, bw, bh) <= (bw * bh);
                 }
                 if (params->effort >= 4 && !skip_subpel) {
-                    static uint8_t tmp[(2 + HP_STRIDE) * (2 + HP_STRIDE)];
-                    int best_hp;
-                    DSV_PLANE srcp_h, refp_h;
-                    uint8_t *tmphp;
-
-                     /* scale down to match area */
-                    best_hp = best * (SP_SAD_SZ * SP_SAD_SZ) / yarea;
-                    xx = bx + ((bw >> 1) - (SP_SAD_SZ / 2));
-                    yy = by + ((bh >> 1) - (SP_SAD_SZ / 2));
-                    dsv_plane_xy(src, &srcp_h, 0, xx, yy);
-                    dsv_plane_xy(ref, &refp_h, 0,
-                            xx + mv->u.mv.x - 1, /* offset by 1 in x and y so */
-                            yy + mv->u.mv.y - 1);/* we can do negative hpel */
-                    m = -1;
-                    hpel(tmp, refp_h.data, refp_h.stride);
-                    /* start at fullpel (1, 1) */
-                    tmphp = tmp + HP_OFFSET(1, 1);
-                    for (k = 0; k < SPEL_NSEARCH; k++) {
-                        int evx, evy;
-                        score = hpsad(srcp_h.data, srcp_h.stride,
-                                tmphp + xh[k] + yh[k] * HP_STRIDE);
-
-                        evx = ((mv->u.mv.x * 2) + xh[k]) * 2;
-                        evy = ((mv->u.mv.y * 2) + yh[k]) * 2;
-                        score += mv_cost(mf, params, i, j, evx, evy) << HMV_IMPORTANCE;
-                        if (best_hp > score) {
-                            best_hp = score;
-                            m = k;
-                        }
-                    }
-                    mv->u.mv.x *= 2;
-                    mv->u.mv.y *= 2;
-                    if (m != -1) {
-                        mv->u.mv.x += xh[m];
-                        mv->u.mv.y += yh[m];
-                        best = best_hp * yarea / (SP_SAD_SZ * SP_SAD_SZ);
-                    }
-                    /* try qpel */
-                    if (params->effort >= 9 ||
-                       (params->effort == 8 &&
-                        abs(mv->u.mv.x) <= QPEL_CHECK_THRESH &&
-                        abs(mv->u.mv.y) <= QPEL_CHECK_THRESH)) {
-                        static uint8_t tmpq[(4 + QP_STRIDE) * (QP_STRIDE + 4)];
-                        uint8_t *tmpqp;
-                        int best_qp;
-                        int qpx, qpy;
-                        /* start at (1, 1) + potential hpel best */
-                        qpx = 4;
-                        qpy = 4;
-                        if (m != -1) {
-                            qpx += xh[m] * 2;
-                            qpy += yh[m] * 2;
-                            best_qp = best_hp;
-                        } else {
-                            best_qp = best * (SP_SAD_SZ * SP_SAD_SZ) / yarea;
-                        }
-                        m = -1;
-
-                        qpel(tmpq, tmp);
-                        tmpqp = tmpq + qpx + qpy * QP_STRIDE;
-                        for (k = 0; k < SPEL_NSEARCH; k++) {
-                            int evx, evy;
-                            score = qpsad(srcp_h.data, srcp_h.stride,
-                                    tmpqp + xh[k] + yh[k] * QP_STRIDE);
-                            evx = (mv->u.mv.x * 2) + xh[k];
-                            evy = (mv->u.mv.y * 2) + yh[k];
-                            score += mv_cost(mf, params, i, j, evx, evy) << QMV_IMPORTANCE;
-                            if (best_qp > score) {
-                                best_qp = score;
-                                m = k;
-                            }
-                        }
-                        mv->u.mv.x *= 2;
-                        mv->u.mv.y *= 2;
-                        if (m != -1) {
-                            mv->u.mv.x += xh[m];
-                            mv->u.mv.y += yh[m];
-                            best = best_qp * yarea / (SP_SAD_SZ * SP_SAD_SZ);
-                        }
-                    } else {
-                        mv->u.mv.x *= 2;
-                        mv->u.mv.y *= 2;
-                    }
+                    best = subpixel_ME(params, mf, mv, src, ref, i, j, best, bx, by, bw, bh);
                 } else {
                     mv->u.mv.x *= 4;
                     mv->u.mv.y *= 4;
@@ -775,13 +1197,14 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
                     DSV_PLANE srcp_l, zrefp, zrecp, mvrefp, mvrecp;
                     unsigned tex_src, tex_mvrec;
                     unsigned var_src, var_zref, var_mvrec;
-                    unsigned avg_src, avg_zref, avg_mvrec;
+                    unsigned avg_src, avg_zref, avg_mvrec, avg_zrec;
                     int uavg_src, vavg_src, uavg_zref, vavg_zref;
                     int cbx, cby, cbw, cbh, subsamp;
                     CHROMA_PSY cpsy;
                     unsigned avgdif, vardif;
                     unsigned ubest, mad, avg_c_dif;
                     unsigned var_t = 16, var_d;
+                    int eprmi, eprmr;
 
                     xx = bx + ((bw >> 1) - (SP_SAD_SZ / 2));
                     yy = by + ((bh >> 1) - (SP_SAD_SZ / 2));
@@ -792,7 +1215,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
                     dsv_plane_xy(hme->recon, &mvrecp, 0, bx + DSV_SAR(mv->u.mv.x, 2), by + DSV_SAR(mv->u.mv.y, 2));
 
                     ubest = best;
-                    mad = DSV_UDIV_ROUND(ubest, yarea);
+                    mad = DSV_UDIV_ROUND(ubest, (bw * bh));
                     /* gather metrics about the blocks.
                      * _src = source block
                      * _mvrec = reconstructed ref frame block at full-pel motion (x,y)
@@ -844,33 +1267,38 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
                     }
 
                     mv->eprm = 0;
-                    if (is_inter_better(&srcp, &zrecp, bw, bh, mv)) {
+                    avg_zrec = calc_EPRM(&srcp, &zrecp, &mvrecp, bw, bh, &eprmi, &eprmr);
+                    if (is_inter_better(&srcp, &mvrecp, avg_zrec, bw, bh, mv, eprmi, eprmr)) {
+                        mv->eprm = eprmr;
+                        if (mv->u.all == 0) {
+                            goto inter;
+                        }
                         goto force_inter;
                     }
                     /* using gotos to make it a bit easier to read (for myself) */
 #if 1 /* have intra blocks */
-
                     /* only bother checking low texture/variance blocks */
-                    if (tex_src <= var_d || var_src <= var_d) {
-                        unsigned vts, vtr, tol, spandif;
+                    if (mv->u.all != 0 && (tex_src <= var_d || var_src <= var_d)) {
+                        int vts, vtr, tol, spandif;
                         int span_src, span_mvrec;
                         int is_subpel = (mv->u.mv.x & 3) || (mv->u.mv.y & 3);
 
+                        if (mad > 16) {
+                            goto intra;
+                        }
                         vts = MAX(var_src, tex_src);
                         vtr = (var_mvrec + tex_mvrec + 1) / 2; /* average rather than MAX seems to give better results */
                         tol = vts * vts;
 
-                        /* reassign but with comparison to reconstructed frame instead of reference */
-                        vardif = abs((int) var_src - (int) var_mvrec);
-
-                        if (vtr > tol || (vts == 0 && vtr > 0 && (vardif > vtr * 2))) {
+                        if (vtr > tol || (vts > 0 && (vtr > 3 * vts / 2))) {
                             goto intra;
                         }
                         span_src = block_span(srcp.data, srcp.stride, bw, bh);
                         span_mvrec = block_span(mvrecp.data, mvrecp.stride, bw, bh);
-                        spandif = abs(span_src - span_mvrec);
-                        /* if significant error and span difference */
-                        if (spandif > (tol * 4 / 3) && mad > 2) {
+                        spandif = (span_mvrec - span_src);
+                        tol = (16 * (vts + 1));
+                        tol = MAX(tol, 16);
+                        if (span_mvrec > (span_src * span_src)) {
                             goto intra;
                         }
 #if 1 /* chroma check */
@@ -879,7 +1307,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
                             int greyish_rec, uavg_rec, vavg_rec;
                             int mvcbx, mvcby, ud, vd;
                             int uspan_src, vspan_src, uspan_rec, vspan_rec;
-                            unsigned sdu, sdv;
+                            int sdu, sdv;
 
                             mvcbx = cbx + DSV_SAR(mv->u.mv.x, 2 + DSV_FORMAT_H_SHIFT(subsamp));
                             mvcby = cby + DSV_SAR(mv->u.mv.y, 2 + DSV_FORMAT_V_SHIFT(subsamp));
@@ -896,10 +1324,9 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
                             }
                             c_span(sp, mvcbx, mvcby, cbw, cbh, &uspan_src, &vspan_src);
                             c_span(rcp, mvcbx, mvcby, cbw, cbh, &uspan_rec, &vspan_rec);
-                            sdu = abs(uspan_src - uspan_rec);
-                            sdv = abs(vspan_src - vspan_rec);
-                            if (sdu > 64 || sdv > 64 ||
-                                sdu > spandif || sdv > spandif) {
+                            sdu = (uspan_rec - uspan_src);
+                            sdv = (vspan_rec - vspan_src);
+                            if (sdu > 64 || sdv > 64 || sdu > spandif || sdv > spandif) {
                                 goto intra;
                             }
                         }
@@ -907,129 +1334,32 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
                     }
                     goto inter;
 intra:
-                    /* do extra checks for 4 quadrants */
-                    mv->submask = DSV_MASK_ALL_INTRA;
-                    /* don't give low texture intra blocks the opportunity to cause trouble */
-                    if (params->effort >= 5 && tex_src > 1) {
-                        int f, g, sbw, sbh, mask_index;
-                        uint8_t masks[4] = {
-                                ~DSV_MASK_INTRA00,
-                                ~DSV_MASK_INTRA01,
-                                ~DSV_MASK_INTRA10,
-                                ~DSV_MASK_INTRA11,
-                        };
-                        sbw = bw / 2;
-                        sbh = bh / 2;
-                        mask_index = 0;
-                        for (g = 0; g <= sbh; g += sbh) {
-                            for (f = 0; f <= sbw; f += sbw) {
-                                if (inter_zero_good(srcp.data + (f + g * srcp.stride), srcp.stride,
-                                        zrecp.data + (f + g * zrecp.stride), zrecp.stride, sbw, sbh)) {
-                                    /* mark as inter with zero vector */
-                                    mv->submask &= masks[mask_index];
-                                }
-                                mask_index++;
-                            }
-                        }
-                    }
-                    if (mv->submask) {
-                        mv->mode = DSV_MODE_INTRA;
+                    if (detail_subblocks(params, mv, &srcp, &zrecp, bw, bh, tex_src)) {
                         nintra++;
                     }
 inter:
-                    if (params->effort >= 6 && mv->mode != DSV_MODE_INTRA) {
-                        int f, g, sbw, sbh, bit_index, nlsb = 0, ncsb = 0;
-                        int luma_vars[4];
-                        int luma_vardif[4];
-                        int luma_avgs[4];
-                        int skip_luma = 0;
-                        uint8_t bits[4] = {
-                                DSV_MASK_INTRA00,
-                                DSV_MASK_INTRA01,
-                                DSV_MASK_INTRA10,
-                                DSV_MASK_INTRA11,
-                        };
-                        mv->submask = 0;
-                        if (mad < MAX(tex_src, 4) || (mad < 16 && var_src > 0)) {
-                            skip_luma = 1;
-                        }
-                        sbw = bw / 2;
-                        sbh = bh / 2;
-                        bit_index = 0;
-
-                        for (g = 0; g <= sbh; g += sbh) {
-                            for (f = 0; f <= sbw; f += sbw) {
-                                uint8_t *src_d, *rec_d;
-                                unsigned vs, avs;
-                                unsigned vr, avr;
-
-                                src_d = srcp.data + (f + g * srcp.stride);
-                                rec_d = zrecp.data + (f + g * zrecp.stride);
-
-                                vs = block_var(src_d, srcp.stride, sbw, sbh, &avs);
-                                vr = block_var(rec_d, zrecp.stride, sbw, sbh, &avr);
-                                luma_vars[bit_index] = vs;
-                                luma_vardif[bit_index] = (int) vs - (int) vr;
-                                luma_avgs[bit_index] = avs;
-                                if (!skip_luma && ((vr > vs && vs < var_t) || abs((int) avr - (int) avs) >= 8)) {
-                                    mv->submask |= bits[bit_index];
-                                    nlsb++;
-                                }
-                                bit_index++;
-                            }
-                        }
-                        if (avg_src <= LUMA_CHROMA_CUTOFF || (var_src > var_d)) {
-                           goto skip_chroma;
-                        }
-                        sbw = cbw / 2;
-                        sbh = cbh / 2;
-                        bit_index = 0;
-
-                        for (g = 0; g <= sbh; g += sbh) {
-                            for (f = 0; f <= sbw; f += sbw) {
-                                unsigned ud, vd;
-                                int usa, vsa, ura, vra; /* chroma src/rec averages */
-                                int downshift;
-                                CHROMA_PSY spsy;
-
-                                if (mv->submask & bits[bit_index]) {
-                                    continue; /* skip subblocks that are already intra */
-                                }
-                                if (luma_vars[bit_index] > 3 || luma_vardif[bit_index] <= 1) {
-                                    /* likely not worth messing up the luma if the chroma is bad in these cases */
-                                    continue;
-                                }
-                                c_average(sp, cbx + f, cby + g, sbw, sbh, &usa, &vsa);
-                                c_average(rcp, cbx + f, cby + g, sbw, sbh, &ura, &vra);
-                                chroma_analysis(&spsy, luma_avgs[bit_index], usa, vsa);
-                                if (spsy.skinnish) {
-                                    downshift = 3; /* less lenient with skin tones */
-                                } else if (spsy.hifreq) {
-                                    downshift = 5; /* more lenient with high frequency colors */
-                                } else {
-                                    downshift = 4;
-                                }
-                                ud = abs(usa - ura) >> downshift;
-                                vd = abs(vsa - vra) >> downshift;
-                                if (ud || vd) { /* if chroma averages were significantly different */
-                                    mv->submask |= bits[bit_index];
-                                    ncsb += ud + vd;
-                                }
-                                bit_index++;
-                            }
-                        }
-skip_chroma:
-                        /* combine luma and chroma test scores */
-                        if ((nlsb + (ncsb / (skip_luma ? 1 : 2))) > 0) {
-                            mv->mode = DSV_MODE_INTRA;
-                            nintra++;
-                        } else {
-                            mv->submask = 0;
-                        }
+                    if (mv->mode != DSV_MODE_INTRA &&
+                        cleanup_subblocks(params, mv,
+                            mad, var_d,
+                            var_src, tex_src, avg_src,
+                            sp, rcp,
+                            &srcp, &zrecp,
+                            bw, bh,
+                            cbx, cby,
+                            cbw, cbh)) {
+                        nintra++;
                     }
 #endif
 force_inter:
-                ;
+                    ;
+                    if (mv->mode == DSV_MODE_INTRA) {
+                        mv->eprm = eprmi;
+                        if (mv->submask != DSV_MASK_ALL_INTRA) {
+                            mv->eprm |= eprmr;
+                        }
+                    } else {
+                        mv->eprm = eprmr;
+                    }
                 }
             }
         }
@@ -1137,23 +1467,25 @@ dsv_intra_analysis(DSV_FRAME *src, DSV_FRAME *small_frame, int scale, DSV_PARAMS
                 }
                 var_t -= rel_luma;
             } else {
-                var_t = 8;
+                var_t = 16;
             }
             maintain = (luma_var < var_t) && (luma_tex < var_t);
             if (params->do_psy) {
-                keep_hf = 0;
                 if (!cpsy.hifreq) {
-                    int luma_span;
-
-                    luma_span = block_span(srcp.data, srcp.stride, bw, bh);
-                    /* large span + med/low texture = likely important detail */
-                    if (luma_span >= 92 && luma_tex < 24) {
+                    keep_hf = 0;
+                    maintain |= block_has_vis_edge(srcp.data, srcp.stride, bw, bh);
+                    /* med/low texture dominant blocks are visually important */
+                    if (luma_tex > luma_var && luma_tex < 32) {
                         keep_hf = 1;
                     }
-                    /* med/low texture dominant blocks are visually important */
-                    if (luma_tex >= luma_var && luma_tex < 32) {
-                        maintain = 1;
-                        keep_hf = 1;
+                    if (!keep_hf) {
+                        int luma_span;
+
+                        luma_span = block_span(srcp.data, srcp.stride, bw, bh);
+                        /* large span + med/low texture = likely important detail */
+                        if (luma_span >= 92 && luma_tex < 24) {
+                            keep_hf = 1;
+                        }
                     }
                 } else {
                     maintain = 0;
@@ -1161,7 +1493,7 @@ dsv_intra_analysis(DSV_FRAME *src, DSV_FRAME *small_frame, int scale, DSV_PARAMS
                 }
             }
             mv->maintain = maintain;
-            mv->skip = keep_hf; /* reusing the skip flag to mean 'stable' */
+            mv->skip = keep_hf; /* reusing the skip flag */
         }
     }
 
@@ -1180,4 +1512,3 @@ dsv_hme(DSV_HME *hme, int *scene_change_blocks)
     }
     return (nintra * 100) / (hme->params->nblocks_h * hme->params->nblocks_v);
 }
-

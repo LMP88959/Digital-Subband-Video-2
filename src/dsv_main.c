@@ -145,6 +145,8 @@ static struct PARAM enc_params[] = {
             "rate control mode. 0 = single pass average bitrate (ABR), 1 = constant rate factor (CRF). 0 = default" },
     { "kbps", AUTO_BITRATE, AUTO_BITRATE, INT_MAX, to_bps,
             "ONLY FOR ABR RATE CONTROL: bitrate in kilobits per second. 0 = auto-estimate needed bitrate for desired qp. 0 = default" },
+    { "minqstep", DSV_USER_QUAL_TO_RC_QUAL(1), 1, DSV_RC_QUAL_MAX, NULL,
+            "min quality step when decreasing quality for ABR, any step smaller in magnitude than minqstep will be set to zero, absolute quant amount in range [1, 400]. 4 = default (1.0%)" },
     { "maxqstep", DSV_USER_QUAL_TO_RC_QUAL(1) / 4, 1, DSV_RC_QUAL_MAX, NULL,
             "max quality step for ABR, absolute quant amount in range [1, 400]. 1 = default (0.25%)" },
     { "minqp", DSV_USER_QUAL_TO_RC_QUAL(0), 0, 100, pct_to_qual,
@@ -171,6 +173,8 @@ static struct PARAM enc_params[] = {
             "intra frames that are created outside of the normal GOP cycle reset the GOP cycle if 1. 1 = default" },
     { "psy", 1, 0, 1, NULL,
            "enable/disable psychovisual optimizations. 1 = default" },
+    { "dib", 1, 0, 1, NULL,
+           "enable/disable boosting the quality of dark intra frames. 1 = default" },
     { "y4m", 0, 0, 1, NULL,
             "set to 1 if input is in Y4M format, 0 if raw YUV. 0 = default" },
     { NULL, 0, 0, 0, NULL, "" }
@@ -572,6 +576,7 @@ encode(void)
     } else {
         enc.bitrate = spec_bps;
     }
+    enc.min_q_step = get_optval(enc_params, "minqstep");
     enc.max_q_step = get_optval(enc_params, "maxqstep");
     enc.min_quality = get_optval(enc_params, "minqp");
     enc.max_quality = get_optval(enc_params, "maxqp");
@@ -588,6 +593,7 @@ encode(void)
     enc.block_size_override_y = get_optval(enc_params, "bszy");
     enc.effort = get_optval(enc_params, "effort");
     enc.do_psy = get_optval(enc_params, "psy");
+    enc.do_dark_intra_boost = get_optval(enc_params, "dib");
 
     frno = get_optval(enc_params, "sfr");
     nfr = get_optval(enc_params, "nfr");
