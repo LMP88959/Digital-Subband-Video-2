@@ -90,6 +90,7 @@ typedef struct {
     /* approximate average bitrate desired */
     unsigned bitrate;
     /* for ABR */
+    int min_q_step;
     int max_q_step;
     int min_quality; /* 0...DSV_MAX_QUALITY */
     int max_quality; /* 0...DSV_MAX_QUALITY */
