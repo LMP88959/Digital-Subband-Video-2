@@ -187,9 +187,39 @@ tmq4pos(int q, int bits, int l, int c, int isP)
 }
 
 static int
-quant(DSV_SBC v, int q)
+quantINTRA(DSV_SBC v, int q)
 {
-    return ((v >= 0 ? v - (q >> 3) : v + (q >> 3)) / q);
+    return v / q;
+}
+
+static int
+quantPL(DSV_SBC v, int q)
+{
+    return ((v >= 0 ? v - ((q >> 2)) : v + ((q >> 2))) / q);
+}
+
+static int
+quantPH(DSV_SBC v, int q)
+{
+    return ((v >= 0 ? v - ((q >> 2)) : v + ((q >> 2))) / q);
+}
+
+static int
+quantIL(DSV_SBC v, int q)
+{
+    return ((v >= 0 ? v - ((q >> 5)) : v + (q >> 5)) / q);
+}
+
+static int
+quantMAINTAIN(DSV_SBC v, int q)
+{
+    return v / q;
+}
+
+static int
+quantF(DSV_SBC v, int q)
+{
+    return ((v >= 0 ? v - ((q >> 2) + (q >> 3)) : v + ((q >> 2) + (q >> 3))) / q);
 }
 
 /* C.2.1 Dequantization Functions - dequantize_lower_frequency */
@@ -253,7 +283,11 @@ hzcc_enc(DSV_BS *bs, DSV_SBC *src, int w, int h, int q, DSV_FMETA *fm)
     /* C.2.3 LL Subband */
     for (y = 0; y < sh; y++) {
         for (x = 0; x < sw; x++) {
-            v = quant(srcp[x], qp);
+            if (fm->isP) {
+                v = quantPL(srcp[x], qp);
+            } else {
+                v = quantIL(srcp[x], qp);
+            }
             if (v) {
                 srcp[x] = dequant(v, qp);
                 dsv_bs_put_ueg(bs, run);
@@ -327,8 +361,21 @@ hzcc_enc(DSV_BS *bs, DSV_SBC *src, int w, int h, int q, DSV_FMETA *fm)
                     bx = 0;
                     blockrow = fm->blockdata + (by >> DSV_BLOCK_INTERP_P) * fm->params->nblocks_h;
                     for (x = 0; x < sw; x++) {
-                        tmq = tmq4pos(qp, blockrow[bx >> DSV_BLOCK_INTERP_P], l, fm->cur_plane, fm->isP);
-                        v = quant(srcp[x], tmq);
+                        int bv = blockrow[bx >> DSV_BLOCK_INTERP_P];
+                        tmq = tmq4pos(qp, bv, l, fm->cur_plane, fm->isP);
+                        if (fm->isP) {
+                            if (bv & DSV_IS_INTRA) {
+                                v = quantINTRA(srcp[x], tmq);
+                            } else {
+                                v = quantPH(srcp[x], tmq);
+                            }
+                        } else {
+                            if ((bv & (DSV_IS_STABLE | DSV_IS_MAINTAIN)) == (DSV_IS_MAINTAIN)) {
+                                v = quantMAINTAIN(srcp[x], tmq);
+                            } else {
+                                v = quantF(srcp[x], tmq);
+                            }
+                        }
                         if (v) {
                             srcp[x] = dequant(v, tmq);
                             dsv_bs_put_ueg(bs, run);
