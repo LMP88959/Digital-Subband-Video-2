@@ -158,8 +158,12 @@ quality2quant(DSV_ENCODER *enc, DSV_ENCDATA *d)
             delta *= 2;
         }
         delta = (q * delta >> 9);
-
+        
+        enc->min_q_step = CLAMP(enc->min_q_step, 1, DSV_RC_QUAL_MAX);
         enc->max_q_step = CLAMP(enc->max_q_step, 1, DSV_RC_QUAL_MAX);
+        if (dir < 0 && delta < enc->min_q_step) {
+            delta = 0;
+        }
 
         /* limit delta by a different amount depending on direction */
         if (dir > 0) {
@@ -870,6 +874,7 @@ dsv_enc_init(DSV_ENCODER *enc)
     enc->pyramid_levels = 0;
     enc->rc_mode = DSV_RATE_CONTROL_CRF;
     enc->bitrate = INT_MAX;
+    enc->min_q_step = 4;
     enc->max_q_step = 1;
     enc->min_quality = DSV_QUALITY_PERCENT(1);
     enc->max_quality = DSV_QUALITY_PERCENT(95);
