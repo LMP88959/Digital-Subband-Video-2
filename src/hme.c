@@ -1284,9 +1284,6 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
                         int span_src, span_mvrec;
                         int is_subpel = (mv->u.mv.x & 3) || (mv->u.mv.y & 3);
 
-                        if (mad > 16) {
-                            goto intra;
-                        }
                         vts = MAX(var_src, tex_src);
                         vtr = (var_mvrec + tex_mvrec + 1) / 2; /* average rather than MAX seems to give better results */
                         tol = vts * vts;
