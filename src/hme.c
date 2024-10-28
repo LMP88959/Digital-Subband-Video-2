@@ -1296,8 +1296,6 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
                         span_src = block_span(srcp.data, srcp.stride, bw, bh);
                         span_mvrec = block_span(mvrecp.data, mvrecp.stride, bw, bh);
                         spandif = (span_mvrec - span_src);
-                        tol = (16 * (vts + 1));
-                        tol = MAX(tol, 16);
                         if (span_mvrec > (span_src * span_src)) {
                             goto intra;
                         }
