@@ -1269,11 +1269,12 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
                     mv->eprm = 0;
                     avg_zrec = calc_EPRM(&srcp, &zrecp, &mvrecp, bw, bh, &eprmi, &eprmr);
                     if (is_inter_better(&srcp, &mvrecp, avg_zrec, bw, bh, mv, eprmi, eprmr)) {
-                        mv->eprm = eprmr;
                         if (mv->u.all == 0) {
                             goto inter;
                         }
-                        goto force_inter;
+                        if (MAX(var_src, tex_src) > 0) {
+                            goto force_inter; /* intra looks better in flat regions so bias against it */
+                        }
                     }
                     /* using gotos to make it a bit easier to read (for myself) */
 #if 1 /* have intra blocks */
@@ -1297,6 +1298,10 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
                         span_mvrec = block_span(mvrecp.data, mvrecp.stride, bw, bh);
                         spandif = (span_mvrec - span_src);
                         if (span_mvrec > (span_src * span_src)) {
+                            goto intra;
+                        }
+                        tol = 4;
+                        if (span_src / tol > 0 && (span_mvrec / tol > 3 * span_src / (tol * 2))) {
                             goto intra;
                         }
 #if 1 /* chroma check */
@@ -1510,3 +1515,4 @@ dsv_hme(DSV_HME *hme, int *scene_change_blocks)
     }
     return (nintra * 100) / (hme->params->nblocks_h * hme->params->nblocks_v);
 }
+
