@@ -1055,15 +1055,14 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
             int bx, by, bw, bh;
             int k, xx, yy, m, n = 0;
             DSV_MV *inherited[8];
-            DSV_MV best_mv = { 0 };
-
-            best_mv.mode = DSV_MODE_INTER;
 
             bx = (i * y_w) >> level;
             by = (j * y_h) >> level;
-
+            /* bounds check for safety */
             if ((bx >= src->width) || (by >= src->height)) {
-                mf[i + j * nxb] = best_mv; /* bounds check for safety */
+                DSV_MV zmv = { 0 };
+                zmv.mode = DSV_MODE_INTER;
+                mf[i + j * nxb] = zmv;
                 continue;
             }
 
@@ -1252,7 +1251,11 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
                     /* more difference, more likely to need a scene change */
                     ndiff += ((mad > 11) || (vardif > 10)) + (avg_c_dif / 32);
 
+                    mv->eprm = 0;
                     mv->skip = 0;
+
+                    avg_zrec = calc_EPRM(&srcp, &zrecp, &mvrecp, bw, bh, &eprmi, &eprmr);
+
                     if (hme->enc->skip_block_thresh >= 0) {
                         unsigned skipt = hme->enc->skip_block_thresh;
                         int mvfac = abs(mv->u.mv.x) + abs(mv->u.mv.y);
@@ -1266,8 +1269,6 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
                         }
                     }
 
-                    mv->eprm = 0;
-                    avg_zrec = calc_EPRM(&srcp, &zrecp, &mvrecp, bw, bh, &eprmi, &eprmr);
                     if (is_inter_better(&srcp, &mvrecp, avg_zrec, bw, bh, mv, eprmi, eprmr)) {
                         if (mv->u.all == 0) {
                             goto inter;
