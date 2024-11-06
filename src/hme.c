@@ -208,12 +208,13 @@ invalid_block(DSV_FRAME *f, int x, int y, int sx, int sy)
 static unsigned
 calc_EPRM(
         DSV_PLANE *sp, DSV_PLANE *rp, DSV_PLANE *mvrp,
-        int w, int h, int *eprmi, int *eprmr)
+        int w, int h, int *eprmi, int *eprmr, int *eprmz)
 {
     int i, j;
     int ravg, prd;
     int clipi = 0;
     int clipr = 0;
+    int clipz = 0;
     uint8_t *mvr = mvrp->data;
     uint8_t *rec = rp->data;
     uint8_t *src = sp->data;
@@ -230,6 +231,7 @@ calc_EPRM(
 
     *eprmi = 0;
     *eprmr = 0;
+    *eprmz = 0;
 
     for (j = 0; j < h; j++) {
         for (i = 0; i < w; i++) {
@@ -238,20 +240,26 @@ calc_EPRM(
                 prd = (src[i] - mvr[i]) + 128;
                 clipr |= (prd < 0 || prd > 255);
             }
+            if (!clipz) {
+                prd = (src[i] - rec[i]) + 128;
+                clipz |= (prd < 0 || prd > 255);
+            }
             if (!clipi) {
                 prd = (src[i] - ravg) + 128;
                 clipi |= (prd < 0 || prd > 255);
             }
-            if (clipi && clipr) {
+            if (clipi && clipr && clipz) {
                 goto eprm_done;
             }
         }
         src += sp->stride;
         mvr += mvrp->stride;
+        rec += rp->stride;
     }
 eprm_done:
     *eprmi = clipi;
     *eprmr = clipr;
+    *eprmz = clipz;
     return ravg;
 }
 
@@ -805,8 +813,6 @@ cleanup_subblocks(
             uint8_t *src_d, *rec_d;
             unsigned vs, avs;
             unsigned vr, avr;
-            uint16_t histS[NHIST];
-            uint16_t histR[NHIST];
 
             src_d = srcp->data + (f + g * srcp->stride);
             rec_d = zrecp->data + (f + g * zrecp->stride);
@@ -822,6 +828,7 @@ cleanup_subblocks(
                 int histdif;
                 int significant;
                 uint8_t peaksS[NHIST], peaksR[NHIST];
+                uint16_t histS[NHIST], histR[NHIST];
 
                 ts = block_tex(src_d, srcp->stride, sbw, sbh);
                 tr = block_tex(rec_d, zrecp->stride, sbw, sbh);
@@ -1203,7 +1210,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
                     unsigned avgdif, vardif;
                     unsigned ubest, mad, avg_c_dif;
                     unsigned var_t = 16, var_d;
-                    int eprmi, eprmr;
+                    int eprmi, eprmr, eprmz;
 
                     xx = bx + ((bw >> 1) - (SP_SAD_SZ / 2));
                     yy = by + ((bh >> 1) - (SP_SAD_SZ / 2));
@@ -1254,7 +1261,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
                     mv->eprm = 0;
                     mv->skip = 0;
 
-                    avg_zrec = calc_EPRM(&srcp, &zrecp, &mvrecp, bw, bh, &eprmi, &eprmr);
+                    avg_zrec = calc_EPRM(&srcp, &zrecp, &mvrecp, bw, bh, &eprmi, &eprmr, &eprmz);
 
                     if (hme->enc->skip_block_thresh >= 0) {
                         unsigned skipt = hme->enc->skip_block_thresh;
@@ -1356,7 +1363,7 @@ force_inter:
                     if (mv->mode == DSV_MODE_INTRA) {
                         mv->eprm = eprmi;
                         if (mv->submask != DSV_MASK_ALL_INTRA) {
-                            mv->eprm |= eprmr;
+                            mv->eprm |= eprmz;
                         }
                     } else {
                         mv->eprm = eprmr;
