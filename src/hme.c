@@ -1208,9 +1208,9 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
                     int cbx, cby, cbw, cbh, subsamp;
                     CHROMA_PSY cpsy;
                     unsigned avgdif, vardif;
-                    unsigned ubest, mad, avg_c_dif;
+                    unsigned mad, avg_c_dif;
                     unsigned var_t = 16, var_d;
-                    int eprmi, eprmr, eprmz;
+                    int vts, eprmi, eprmr, eprmz;
 
                     xx = bx + ((bw >> 1) - (SP_SAD_SZ / 2));
                     yy = by + ((bh >> 1) - (SP_SAD_SZ / 2));
@@ -1220,8 +1220,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
                     dsv_plane_xy(hme->recon, &zrecp, 0, bx, by);
                     dsv_plane_xy(hme->recon, &mvrecp, 0, bx + DSV_SAR(mv->u.mv.x, 2), by + DSV_SAR(mv->u.mv.y, 2));
 
-                    ubest = best;
-                    mad = DSV_UDIV_ROUND(ubest, (bw * bh));
+                    mad = DSV_UDIV_ROUND((unsigned) best, (bw * bh));
                     /* gather metrics about the blocks.
                      * _src = source block
                      * _mvrec = reconstructed ref frame block at full-pel motion (x,y)
@@ -1245,7 +1244,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
                     c_average(rp, cbx, cby, cbw, cbh, &uavg_zref, &vavg_zref);
 
                     avg_c_dif = (abs(uavg_src - uavg_zref) + abs(vavg_src - vavg_zref) + 1) / 2;
-                    if (ubest > 0) {
+                    if (best > 0) {
                         num_eligible_blocks++;
                     }
                     chroma_analysis(&cpsy, avg_src, uavg_src, vavg_src);
@@ -1277,22 +1276,23 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
                     }
 
                     if (is_inter_better(&srcp, &mvrecp, avg_zrec, bw, bh, mv, eprmi, eprmr)) {
-                        if (mv->u.all == 0) {
-                            goto inter;
-                        }
                         if (MAX(var_src, tex_src) > 0) {
                             goto force_inter; /* intra looks better in flat regions so bias against it */
+                        }
+                        if (mv->u.all == 0) {
+                            goto inter;
                         }
                     }
                     /* using gotos to make it a bit easier to read (for myself) */
 #if 1 /* have intra blocks */
                     /* only bother checking low texture/variance blocks */
-                    if (mv->u.all != 0 && (tex_src <= var_d || var_src <= var_d)) {
-                        int vts, vtr, tol, spandif;
+                    vts = MAX(var_src, tex_src);
+                    if (mv->u.all != 0 && (tex_src <= var_d || var_src <= var_d) &&
+                        (vts == 0 || abs((int) MAX(var_mvrec, tex_mvrec) - vts) > 1)) {
+                        int vtr, tol, spandif;
                         int span_src, span_mvrec;
                         int is_subpel = (mv->u.mv.x & 3) || (mv->u.mv.y & 3);
 
-                        vts = MAX(var_src, tex_src);
                         vtr = (var_mvrec + tex_mvrec + 1) / 2; /* average rather than MAX seems to give better results */
                         tol = vts * vts;
 
@@ -1302,12 +1302,14 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
                         span_src = block_span(srcp.data, srcp.stride, bw, bh);
                         span_mvrec = block_span(mvrecp.data, mvrecp.stride, bw, bh);
                         spandif = (span_mvrec - span_src);
-                        if (span_mvrec > (span_src * span_src)) {
-                            goto intra;
-                        }
-                        tol = 4;
-                        if (span_src / tol > 0 && (span_mvrec / tol > 3 * span_src / (tol * 2))) {
-                            goto intra;
+                        if (abs(mv->u.mv.x) > 3 && abs(mv->u.mv.y) > 3) {
+                            if (span_mvrec > (span_src * span_src)) {
+                                goto intra;
+                            }
+                            tol = 4;
+                            if (span_src / tol > 0 && (span_mvrec / tol > 3 * span_src / (tol * 2))) {
+                                goto intra;
+                            }
                         }
 #if 1 /* chroma check */
                         /* harder to see color error in dark areas */
