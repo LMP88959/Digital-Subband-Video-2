@@ -1287,7 +1287,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
 #if 1 /* have intra blocks */
                     /* only bother checking low texture/variance blocks */
                     vts = MAX(var_src, tex_src);
-                    if (mv->u.all != 0 && (tex_src <= var_d || var_src <= var_d) &&
+                    if (mv->u.all != 0 && mad > 0 && (tex_src <= var_d || var_src <= var_d) &&
                         (vts == 0 || abs((int) MAX(var_mvrec, tex_mvrec) - vts) > 1)) {
                         int vtr, tol, spandif;
                         int span_src, span_mvrec;
