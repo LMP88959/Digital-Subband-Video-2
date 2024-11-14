@@ -184,7 +184,7 @@ reflect(int i, int n)
   }
 
 #define DO_SIMPLE_LO(v, op, s)                                 \
-  v[0] += v[s] >> 1;                                           \
+  v[0] op v[s] >> 1;                                           \
   for (i = 2; i < even_n; i += 2) {                            \
       v[i * s] op (v[(i - 1) * s] + v[(i + 1) * s] + 2) >> 2;  \
   }
