@@ -29,7 +29,7 @@
 #define MINQP    4
 #define MINQUANT (1 << MINQP)  /* C.2 MINQUANT */
 
-#define QP_I     4
+#define QP_I     3
 #define QP_P     3
 
 #define RUN_BITS 24
