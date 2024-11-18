@@ -23,7 +23,7 @@ extern "C" {
 
 #include "dsv_internal.h"
 
-#define DSV_ENCODER_VERSION 2
+#define DSV_ENCODER_VERSION 3
 
 #define DSV_GOP_INTRA 0
 #define DSV_GOP_INF   INT_MAX
