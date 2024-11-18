@@ -33,6 +33,7 @@
 #define FWD_SCALE25(x) (5 * (x) / 2)
 #define INV_SCALE25(x) (2 * (x) / 5)
 
+#define INV_SCALEASF(x) (3 * (x) / 8) /* pseudo-normalize ASF coefficients */
 
 /* C.3 Subband Transforms
  *
@@ -111,45 +112,34 @@ reflect(int i, int n)
     return i;
 }
 
-/* Naming:
+/* filter defines, 'x' means any character
  *
- * in this comment, X means placeholder/wildcard character
+ * filters for L2 and greater are of the form:
+ * [ 1, xx0, CENTER_SAMPLE, xx0, 1 ]
  *
- * XX0 = main filter coefficient
- * XXS = filter normalization shift
- * XXA = filter rounding addition
- *
- * RXX = ringing filter
- * SXX = standard filter (as opposed to ringing filter)
- * LXX = lower level standard filter
- *
- * X1X = level 1 filter (highest frequency)
- * X2X = level 2 filter (second highest frequency)
- * XLX = lower level filter
+ * xx0 = main filter coefficient
+ * xxS = filter normalization shift
+ * xxA = filter rounding addition
  */
+
+/* lower level (L3 and L4) filter */
 #define LL0 5
 #define LLS 5
 #define LLA (1 << (LLS - 1))
-
-#define L10 17
-#define L1S 6
-#define L1A (1 << (L1S - 1))
 
 /* a poor filter with heavy ringing actually gives us benefits
  * with regard to perceptual quality for natural images by
  * giving the image noise around high frequency details --
  * preserving them better while also creating a general illusion of detail */
 
+/* L2 ringing filter */
 #define R20 3
 #define R2S 2
 #define R2A (1 << (R2S - 1))
 
-#define S10 5
-#define S1S 3
-#define S1A (1 << (S1S - 1))
-
-#define S20 3
-#define S2S 3
+/* L2 standard filter */
+#define S20 9
+#define S2S 5
 #define S2A (1 << (S2S - 1))
 
 /* reflected get */
@@ -189,29 +179,26 @@ reflect(int i, int n)
       v[i * s] op (v[(i - 1) * s] + v[(i + 1) * s] + 2) >> 2;  \
   }
 
+#define DO_SIMPLE_INV(v, s) \
+  v[0] -= v[s] >> 1; \
+  for (i = 2; i < even_n; i += 2) { \
+      v[i * s] -= (v[(i - 1) * s] + v[(i + 1) * s] + 2) >> 2; \
+      v[(i - 1) * s] += (v[(i - 2) * s] + v[i * s] + 1) >> 1; \
+  } \
+  if (!(n & 1)) { \
+      v[(n - 1) * s] += v[(n - 2) * s]; \
+  }
+
 /* 5 tap low/high pass filters with/without adaptive ringing */
 #define MAKE_5_TAP(v, C0, CA, CS, op, s)            \
   v[i * s] op (-v[rg(i - 3, s)] +                   \
           C0 * (v[(i - 1) * s] + v[(i + 1) * s]) -  \
                 v[rg(i + 3, s)] + CA) >> CS
 
-
 #define DO_5_TAP_LO(v, C0, CA, CS, op, s) \
   v[0] op v[s] >> 1;                      \
   for (i = 2; i < even_n; i += 2) {       \
       MAKE_5_TAP(v, C0, CA, CS, op, s);   \
-  }
-
-#define DO_5_TAP_HI(v, C0, CA, CS, op, s)                     \
-  for (i = 1; i < n - 3; i += 2) {                            \
-      MAKE_5_TAP(v, C0, CA, CS, op, s);                       \
-  }                                                           \
-  while (i < n - 1) {                                         \
-      v[i * s] op (v[(i - 1) * s] + v[(i + 1) * s] + 1) >> 1; \
-      i += 2;                                                 \
-  }                                                           \
-  if (!(n & 1)) {                                             \
-      v[(n - 1) * s] op v[(n - 2) * s];                       \
   }
 
 #define DO_5_TAP_LO_A(v, C0, CA, CS, R0, RA, RS, op, s)             \
@@ -225,6 +212,37 @@ reflect(int i, int n)
       }                                                             \
       sbp += delta;                                                 \
   }
+
+/* Filter coefficients for this encoder's ASF analysis implementation.
+ * These coefficients and forward filtering methods can be unique to each
+ * encoder since the decoder simply does a 3-tap synthesis. */
+#define LPFA 182
+#define LPFB 76
+#define LPFC 31
+#define LPFD 12
+#define LPFE 4
+
+#define HPFA 138
+#define HPFB 70
+#define HPFC 9
+#define HPFD 6
+#define HPFE 4
+
+#define ASFNORM 8
+
+#define ASF93_LO(i, vs, s) \
+                  (LPFA *  vs[rg(i + 0, s)] \
+                 + LPFB * (vs[rg(i - 1, s)] + vs[rg(i + 1, s)]) \
+                 - LPFC * (vs[rg(i - 2, s)] + vs[rg(i + 2, s)])\
+                 - LPFD * (vs[rg(i - 3, s)] + vs[rg(i + 3, s)])\
+                 + LPFE * (vs[rg(i - 4, s)] + vs[rg(i + 4, s)]))
+
+#define ASF93_HI(i, vs, s)\
+                  (HPFA *  vs[rg(i + 0, s)] \
+                 - HPFB * (vs[rg(i - 1, s)] + vs[rg(i + 1, s)]) \
+                 - HPFC * (vs[rg(i - 2, s)] + vs[rg(i + 2, s)])\
+                 + HPFD * (vs[rg(i - 3, s)] + vs[rg(i + 3, s)])\
+                 + HPFE * (vs[rg(i - 4, s)] + vs[rg(i + 4, s)]))
 
 static void
 filterLL(DSV_SBC *out, DSV_SBC *in, int n, int s)
@@ -280,22 +298,45 @@ ifilterL2_a(DSV_SBC *out, DSV_SBC *in, int n, int s, uint8_t *sb, int delta, int
     DO_SIMPLE_HI(out, +=, s);
 }
 
+/* ASF93 asymmetric subband filter.
+ *
+ * 'n' is guaranteed to be even here because this is the highest freq subband
+ * (full frame size) and is only applied to the luma plane (which the spec
+ * requires to have even dimensions) */
 static void
 filterL1(DSV_SBC *out, DSV_SBC *in, int n, int s)
 {
-    int i, even_n = n & ~1, h = n + (n & 1);
-    DO_5_TAP_HI(in, S10, S1A, S1S, -=, s);
-    DO_5_TAP_LO(in, L10, L1A, L1S, +=, s);
-    SCALE_PACK(FWD_SCALE20, FWD_SCALENONE, s);
+    int i, L, H;
+
+    for (i = 1; i < n - 2; i += 2) {
+        L = ASF93_LO((i - 1), in, s);
+        H = ASF93_HI((i - 0), in, s) * 3; /* scale H up a little */
+        out[(i + 0) / 2 * s] = (L + (1 << (ASFNORM - 2))) >> (ASFNORM - 1);
+        out[(i + n) / 2 * s] = (H + (1 << (ASFNORM - 2))) >> (ASFNORM - 1);
+    }
+    /* deal with edges */
+    in[s] -= (in[0] + in[2 * s] + 1) >> 1;
+    in[(n - 3) * s] -= (in[(n - 4) * s] + in[(n - 2) * s] + 1) >> 1;
+    if (!(n & 1)) {
+        in[(n - 1) * s] -= in[(n - 2) * s];
+    }
+    in[0] += in[s] >> 1;
+    in[2 * s] += (in[s] + in[3 * s] + 2) >> 2;
+    in[(n - 2) * s] += (in[(n - 3) * s] + in[(n - 1) * s] + 2) >> 2;
+
+    out[0 / 2 * s] = FWD_SCALE20(in[0]);
+    out[n / 2 * s] = FWD_SCALE25(in[s]);
+
+    out[((n - 2) + 0) / 2 * s] = FWD_SCALE20(in[((n - 2) + 0) * s]);
+    out[((n - 2) + n) / 2 * s] = FWD_SCALE25(in[((n - 2) + 1) * s]);
 }
 
 static void
 ifilterL1(DSV_SBC *out, DSV_SBC *in, int n, int s)
 {
     int i, even_n = n & ~1, h = n + (n & 1);
-    UNSCALE_UNPACK(INV_SCALE20, INV_SCALENONE, s);
-    DO_5_TAP_LO(out, L10, L1A, L1S, -=, s);
-    DO_5_TAP_HI(out, S10, S1A, S1S, +=, s);
+    UNSCALE_UNPACK(INV_SCALE20, INV_SCALEASF, s);
+    DO_SIMPLE_INV(out, s);
 }
 
 #define fwd_2d(tmp, in, fw, fh, lvl, filter) \
