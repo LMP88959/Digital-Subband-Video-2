@@ -197,6 +197,12 @@ quality2quant(DSV_ENCODER *enc, DSV_ENCDATA *d)
         q = enc->quality;
         enc->rc_qual = q;
     }
+    /* give a bit less quality to I frames to try to spread bits more evenly. */
+    if (!d->params.has_ref && d->fnum > 0) {
+        q -= q / 16;
+
+        q = CLAMP(q, enc->min_I_frame_quality, enc->max_quality);
+    }
     d->quant = qual_to_qp(q);
 
     DSV_DEBUG(("frame quant = %d from %d", d->quant, q));
