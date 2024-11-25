@@ -207,9 +207,8 @@ quality2quant(DSV_ENCODER *enc, DSV_ENCDATA *d)
                 closeness = abs(gop - dist);
                 closeness = CLAMP(closeness, 1, 60);
                 closeness = gop * closeness * closeness / ((closeness * 2) + gop);
-                step = RC_QUAL_PCT(4); //q / 4;
+                step = RC_QUAL_PCT(4);
                 qa = step * closeness / gop;
-              /*  printf("%d * %d / %d = %d\n", step, closeness, gopdiv, qa); */
                 q += CLAMP(qa, RC_QUAL_PCT(0), RC_QUAL_PCT(12));
             }
             q = CLAMP(q, enc->min_I_frame_quality, enc->max_quality);
