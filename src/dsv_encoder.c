@@ -193,15 +193,30 @@ quality2quant(DSV_ENCODER *enc, DSV_ENCDATA *d)
         DSV_INFO(("RC Q = %d delta = %d bpf: %d, avg: %d, dif: %d",
                 q, delta, needed_bpf, bpf, abs(bpf - needed_bpf)));
         enc->rc_qual = q;
+        if (d->fnum > 0) {
+            int dist = abs((int) d->fnum - (int) enc->prev_gop);
+            if (!d->params.has_ref) {
+                /* less bits for sudden I frames */
+                if (dist < (enc->gop - 1)) {
+                    q -= RC_QUAL_PCT(4);
+                }
+            } else {
+                int gop, closeness, step, qa;
+                /* more bits for P frames */
+                gop = CLAMP(enc->gop, 1, 60);
+                closeness = abs(gop - dist);
+                closeness = CLAMP(closeness, 1, 60);
+                closeness = gop * closeness * closeness / ((closeness * 2) + gop);
+                step = RC_QUAL_PCT(4); //q / 4;
+                qa = step * closeness / gop;
+              /*  printf("%d * %d / %d = %d\n", step, closeness, gopdiv, qa); */
+                q += CLAMP(qa, RC_QUAL_PCT(0), RC_QUAL_PCT(12));
+            }
+            q = CLAMP(q, enc->min_I_frame_quality, enc->max_quality);
+        }
     } else {
         q = enc->quality;
         enc->rc_qual = q;
-    }
-    /* give a bit less quality to I frames to try to spread bits more evenly. */
-    if (!d->params.has_ref && d->fnum > 0) {
-        q -= q / 16;
-
-        q = CLAMP(q, enc->min_I_frame_quality, enc->max_quality);
     }
     d->quant = qual_to_qp(q);
 
