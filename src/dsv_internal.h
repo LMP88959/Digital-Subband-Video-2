@@ -107,6 +107,7 @@ extern void dsv_decode_plane(uint8_t *in, unsigned s, DSV_COEFS *dst, int q, DSV
 
 extern int dsv_lb2(unsigned n);
 
+extern int dsv_mv_cost(DSV_MV *vecs, DSV_PARAMS *p, int i, int j, int mx, int my);
 extern void dsv_movec_pred(DSV_MV *vecs, DSV_PARAMS *p, int x, int y, int *px, int *py);
 extern DSV_MV *dsv_intra_analysis(DSV_FRAME *src, DSV_FRAME *small_frame, int scale, DSV_PARAMS *params);
 
