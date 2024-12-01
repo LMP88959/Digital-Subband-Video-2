@@ -23,7 +23,7 @@ extern "C" {
 
 #include "dsv_internal.h"
 
-#define DSV_ENCODER_VERSION 3
+#define DSV_ENCODER_VERSION 4
 
 #define DSV_GOP_INTRA 0
 #define DSV_GOP_INF   INT_MAX
@@ -110,6 +110,8 @@ typedef struct {
     int bpf_avg;
     int total_P_frame_q;
     int avg_P_frame_q;
+    int prev_complexity;
+    int curr_complexity;
 
     DSV_FNUM next_fnum;
     DSV_ENCDATA *ref;
