@@ -702,36 +702,6 @@ qpel(uint8_t *dec, uint8_t *ref)
 }
 
 static int
-seg_bits(int v)
-{
-    int n_bits, len = 0;
-    unsigned x;
-
-    if (v < 0) {
-        v = -v;
-    }
-    v++;
-    x = v;
-    for (n_bits = -1; x; n_bits++) {
-        x >>= 1;
-    }
-    len = n_bits * 2 + 1;
-
-    if (v) {
-        return len + 1;
-    }
-    return len;
-}
-
-static int
-mv_cost(DSV_MV *vecs, DSV_PARAMS *p, int i, int j, int mx, int my)
-{
-    int px, py;
-    dsv_movec_pred(vecs, p, i, j, &px, &py);
-    return seg_bits(mx - px) + seg_bits(my - py);
-}
-
-static int
 detail_subblocks(
         DSV_PARAMS *params, DSV_MV *mv,
         DSV_PLANE *srcp, DSV_PLANE *zrecp,
@@ -949,7 +919,7 @@ subpixel_ME(
 
         evx = ((mv->u.mv.x * 2) + xh[k]) * 2;
         evy = ((mv->u.mv.y * 2) + yh[k]) * 2;
-        score += mv_cost(mf, params, i, j, evx, evy) << HMV_IMPORTANCE;
+        score += dsv_mv_cost(mf, params, i, j, evx, evy) << HMV_IMPORTANCE;
         if (best_hp > score) {
             best_hp = score;
             m = k;
@@ -991,7 +961,7 @@ subpixel_ME(
                     tmpqp + xh[k] + yh[k] * QP_STRIDE);
             evx = (mv->u.mv.x * 2) + xh[k];
             evy = (mv->u.mv.y * 2) + yh[k];
-            score += mv_cost(mf, params, i, j, evx, evy) << QMV_IMPORTANCE;
+            score += dsv_mv_cost(mf, params, i, j, evx, evy) << QMV_IMPORTANCE;
             if (best_qp > score) {
                 best_qp = score;
                 m = k;
@@ -1172,7 +1142,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks)
 
                 evx = (dx + xf[k]) * (1 << (2 + level));
                 evy = (dy + yf[k]) * (1 << (2 + level));
-                score += mv_cost(mf, params, i, j, evx, evy) << 4;
+                score += dsv_mv_cost(mf, params, i, j, evx, evy) << 4;
                 if (best > score) {
                     best = score;
                     m = k;
