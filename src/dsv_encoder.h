@@ -110,6 +110,8 @@ typedef struct {
     int bpf_avg;
     int total_P_frame_q;
     int avg_P_frame_q;
+    int prev_complexity;
+    int curr_complexity;
 
     DSV_FNUM next_fnum;
     DSV_ENCDATA *ref;
