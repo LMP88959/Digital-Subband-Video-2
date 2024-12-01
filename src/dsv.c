@@ -287,6 +287,36 @@ pred(int left, int top, int topleft)
     return top;
 }
 
+static int
+seg_bits(int v)
+{
+    int n_bits, len = 0;
+    unsigned x;
+
+    if (v < 0) {
+        v = -v;
+    }
+    v++;
+    x = v;
+    for (n_bits = -1; x; n_bits++) {
+        x >>= 1;
+    }
+    len = n_bits * 2 + 1;
+
+    if (v) {
+        return len + 1;
+    }
+    return len;
+}
+
+extern int
+dsv_mv_cost(DSV_MV *vecs, DSV_PARAMS *p, int i, int j, int mx, int my)
+{
+    int px, py;
+    dsv_movec_pred(vecs, p, i, j, &px, &py);
+    return seg_bits(mx - px) + seg_bits(my - py);
+}
+
 /* B.2.3.4 Motion Data - Motion Vector Prediction */
 extern void
 dsv_movec_pred(DSV_MV *vecs, DSV_PARAMS *p, int x, int y, int *px, int *py)
