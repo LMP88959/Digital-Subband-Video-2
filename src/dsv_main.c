@@ -154,7 +154,7 @@ static struct PARAM enc_params[] = {
     { "maxqp", DSV_USER_QUAL_TO_RC_QUAL(100), 0, 100, pct_to_qual,
             "maximum quality. 100 = default" },
     { "iminqp", DSV_USER_QUAL_TO_RC_QUAL(5), 0, 100, pct_to_qual,
-            "minimum quality for intra frames. 20 = default" },
+            "minimum quality for intra frames. 5 = default" },
     { "stabref", 0, 0, INT_MAX, NULL,
             "period (in # of frames) to refresh the stability block tracking. 0 = auto-determine. 0 = default" },
     { "scd", 1, 0, 1, NULL,
