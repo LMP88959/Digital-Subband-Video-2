@@ -4,7 +4,7 @@
  *   DSV-2
  *
  *     -
- *    =--     2024 EMMIR
+ *    =--  2024-2025 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -23,7 +23,7 @@ extern "C" {
 
 #include "dsv.h"
 
-#define DSV_DECODER_VERSION 1
+#define DSV_DECODER_VERSION 2
 
 typedef struct {
     DSV_PARAMS params;
@@ -42,6 +42,7 @@ typedef struct {
 #define DSV_DRAW_IBLOCK 4 /* intra subblocks */
     int draw_info; /* set by user */
     int got_metadata;
+    int quant;
 } DSV_DECODER;
 
 #define DSV_DEC_OK        0
