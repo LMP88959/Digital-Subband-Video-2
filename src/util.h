@@ -1,10 +1,10 @@
 /*****************************************************************************/
 /*
- * Digital Subband Video 2
- *   DSV-2
+ * Digital Subband Video 1
+ *   DSV-1
  *
  *     -
- *    =--     2024 EMMIR
+ *    =--  2023-2024 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -38,9 +38,12 @@ extern unsigned estimate_quality(int bps, int gop, DSV_META *md);
 extern void conv444to422(DSV_PLANE *srcf, DSV_PLANE *dstf);
 extern void conv422to420(DSV_PLANE *srcf, DSV_PLANE *dstf);
 extern void conv411to420(DSV_PLANE *srcf, DSV_PLANE *dstf);
+extern void conv410to420(DSV_PLANE *srcf, DSV_PLANE *dstf);
 
 extern int dsv_y4m_read_hdr(FILE *in, int *w, int *h, int *subsamp, int *framerate, int *aspect);
 extern int dsv_y4m_read_seq(FILE *in, uint8_t *o, int w, int h, int subsamp);
+extern void dsv_y4m_write_hdr(FILE *out, int w, int h, int subsamp, int fpsn, int fpsd, int aspn, int aspd);
+extern void dsv_y4m_write_frame_hdr(FILE *out);
 
 #ifdef __cplusplus
 }
