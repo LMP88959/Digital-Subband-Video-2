@@ -4,7 +4,7 @@
  *   DSV-2
  *
  *     -
- *    =--     2024 EMMIR
+ *    =--  2024-2025 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -19,27 +19,31 @@
 #include "dsv_decoder.h"
 #include "util.h"
 
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <limits.h>
 #include <errno.h>
 
 /*
  *
  * effort:
  *
- *   0  : [UNUSED]
- *   1  : [UNUSED]
+ *   0  :
+ *   1  :
  *   2  : diagonal full-pel estimation
- *   3  : [UNUSED]
+ *   3  :
  *   4  : hpel
- *   5  : detail intra test
- *   6  : cleanup intra test
+ *   5  :
+ *   6  : chroma intra test
  *   7  : metadata stats
- *   8  : low-mo qpel
- *   9  : full qpel
- *   10 : full subpel
+ *   8  : qpel
+ *   9  :
+ *   10 :
  *
  */
 
-#define DRV_HEADER "Envel Graphics DSV v2.%d codec by EMMIR 2024. "\
+#define DRV_HEADER "Envel Graphics DSV v2.%d codec by EMMIR 2024-2025. "\
                    "encoder v%d. "  \
                    "decoder v%d.\n", \
                     DSV_VERSION_MINOR, DSV_ENCODER_VERSION, DSV_DECODER_VERSION
@@ -53,10 +57,8 @@ static int verbose = 0;
 #define INP_FMT_422  1
 #define INP_FMT_420  2
 #define INP_FMT_411  3
-#define INP_FMT_UYVY 4
-
-#define RC_ABR 0
-#define RC_CRF 1
+#define INP_FMT_410  4
+#define INP_FMT_UYVY 5
 
 #define AUTO_BITRATE 0
 
@@ -75,18 +77,6 @@ to_bps(int v)
 }
 
 static int
-rc_to_rc(int v)
-{
-    switch (v) {
-        case RC_ABR:
-            return DSV_RATE_CONTROL_ABR;
-        case RC_CRF:
-            return DSV_RATE_CONTROL_CRF;
-    }
-    return DSV_RATE_CONTROL_ABR;
-}
-
-static int
 fmt_to_subsamp(int fmt)
 {
     switch (fmt) {
@@ -100,6 +90,8 @@ fmt_to_subsamp(int fmt)
             return DSV_SUBSAMP_420;
         case INP_FMT_411:
             return DSV_SUBSAMP_411;
+        case INP_FMT_410:
+            return DSV_SUBSAMP_410;
     }
     return DSV_SUBSAMP_420;
 }
@@ -110,82 +102,145 @@ struct PARAM {
    int min, max;
    int (*convert)(int);
    char *desc;
+   char *extra;
 };
 
 static struct PARAM enc_params[] = {
     { "qp", DSV_USER_QUAL_TO_RC_QUAL(-1), -1, 100, pct_to_qual,
-            "quality percent. If -1 and ABR mode, estimate good qp for desired bitrate. If -1 and CRF mode, default to 85. -1 = default" },
+            "quality percent. If -1 and ABR mode, it will auto-estimate a good starting qp for desired bitrate. If -1 and CRF mode, default to 85. -1 = default",
+            "if ABR mode, the qp specified here will be the starting qp which will influence the quality of the beginning of your encoded video"},
     { "effort", DSV_MAX_EFFORT, DSV_MIN_EFFORT, DSV_MAX_EFFORT, NULL,
-            "encoder effort. 0 = least effort, 10 = most effort. higher value -> better video, slower encoding. default = 10" },
+            "encoder effort. 0 = least effort, 10 = most effort. higher value -> better video, slower encoding. default = 10",
+            "does not change decoding speed"},
     { "w", 352, 16, (1 << 24), NULL,
-            "width of input video. 352 = default" },
+            "width of input video. 352 = default",
+            "must be divisible by two"},
     { "h", 288, 16, (1 << 24), NULL,
-            "height of input video. 288 = default" },
-    { "gop", 12, 0, DSV_GOP_INF, NULL,
-            "Group Of Pictures length. 0 = intra frames only, 12 = default" },
-    { "fmt", DSV_SUBSAMP_420, 0, 4, fmt_to_subsamp,
-            "chroma subsampling format of input video. 0 = 4:4:4, 1 = 4:2:2, 2 = 4:2:0, 3 = 4:1:1, 4 = 4:2:2 UYVY, 2 = default" },
+            "height of input video. 288 = default",
+            "must be divisible by two"},
+    { "gop", -1, -1, DSV_GOP_INF, NULL,
+            "Group Of Pictures length. 0 = intra frames only, -1 = set to framerate (e.g 30fps source -> 30 GOP length), -1 = default",
+            "a good value is generally between 0.5 seconds and 10 seconds. e.g at 24 fps, GOP length of 12 is 0.5 seconds"},
+    { "fmt", DSV_SUBSAMP_420, 0, INP_FMT_UYVY, fmt_to_subsamp,
+            "chroma subsampling format of input video. 0 = 4:4:4, 1 = 4:2:2, 2 = 4:2:0, 3 = 4:1:1, 4 = 4:1:0, 5 = 4:2:2 UYVY, 2 = default",
+            "4:1:0 is one chroma sample per 4x4 luma block"},
     { "nfr", -1, -1, INT_MAX, NULL,
-            "number of frames to compress. -1 means as many as possible. -1 = default" },
+            "number of frames to compress. -1 means as many as possible. -1 = default",
+            "unlike -sfr, this parameter works when piping from stdin"},
     { "sfr", 0, 0, INT_MAX, NULL,
-            "frame number to start compressing at. 0 = default" },
+            "frame number to start compressing at. 0 = default",
+            "does not work when piping from stdin"},
+    { "noeos", 0, 0, 1, NULL,
+            "do not write EOS packet at the end of the compressed stream. 0 = default",
+            "useful for multithreaded encoding via concatenation"},
     { "fps_num", 30, 1, (1 << 24), NULL,
-            "fps numerator of input video. 30 = default" },
+            "fps numerator of input video. 30 = default",
+            "used for rate control in ABR mode, otherwise it's just metadata for playback"},
     { "fps_den", 1, 1, (1 << 24), NULL,
-            "fps denominator of input video. 1 = default" },
+            "fps denominator of input video. 1 = default",
+            "used for rate control in ABR mode, otherwise it's just metadata for playback"},
     { "aspect_num", 1, 1, (1 << 24), NULL,
-            "aspect ratio numerator of input video. 1 = default" },
+            "aspect ratio numerator of input video. 1 = default",
+            "only used as metadata for playback"},
     { "aspect_den", 1, 1, (1 << 24), NULL,
-            "aspect ratio denominator of input video. 1 = default" },
-    { "ipct", 67, 0, 100, NULL,
-            "percentage threshold of intra blocks in an inter frame after which it is simply made into an intra frame. 50 = default" },
+            "aspect ratio denominator of input video. 1 = default",
+            "only used as metadata for playback"},
+    { "ipct", 90, 0, 100, NULL,
+            "percentage threshold of intra blocks in an inter frame after which it is simply made into an intra frame. 90 = default",
+            "can be used as a sort of scene change detection alternative if SCD is disabled"},
     { "pyrlevels", 0, 0, DSV_MAX_PYRAMID_LEVELS, NULL,
-            "number of pyramid levels to use in hierarchical motion estimation. 0 means auto-determine. 0 = default" },
-    { "rc_mode", DSV_RATE_CONTROL_ABR, RC_CRF, RC_ABR, rc_to_rc,
-            "rate control mode. 0 = single pass average bitrate (ABR), 1 = constant rate factor (CRF). 0 = default" },
+            "number of pyramid levels to use in hierarchical motion estimation. 0 means auto-determine. 0 = default",
+            "less than 3 levels gives noticeably bad results"},
+    { "rc_mode", DSV_RATE_CONTROL_CRF, DSV_RATE_CONTROL_CRF, DSV_RATE_CONTROL_CQP, NULL,
+            "rate control mode. 0 = constant rate factor (CRF), 1 = single pass average bitrate (ABR), 2 = constant quantization parameter (CQP). 0 = default",
+            "ABR is recommended for hitting a target file size"},
+    { "rc_pergop", 0, 0, 1, NULL,
+            "for non-CQP rate control. 0 = quality is updated per frame, 1 = quality is updated per GOP. 0 = default",
+            "per GOP can be better for visual consistency"},
     { "kbps", AUTO_BITRATE, AUTO_BITRATE, INT_MAX, to_bps,
-            "ONLY FOR ABR RATE CONTROL: bitrate in kilobits per second. 0 = auto-estimate needed bitrate for desired qp. 0 = default" },
+            "ONLY FOR ABR RATE CONTROL: bitrate in kilobits per second. 0 = auto-estimate needed bitrate for desired qp. 0 = default",
+            "adheres to specified frame rate"},
     { "minqstep", DSV_USER_QUAL_TO_RC_QUAL(1) / 2, 1, DSV_RC_QUAL_MAX, NULL,
-            "min quality step when decreasing quality for ABR, any step smaller in magnitude than minqstep will be set to zero, absolute quant amount in range [1, 400]. 2 = default (0.5%)" },
+            "min quality step when decreasing quality for CRF/ABR rate control, any step smaller in magnitude than minqstep will be set to zero, absolute quant amount in range [1, 400]. 2 = default (0.5%)",
+            "generally not necessary to modify"},
     { "maxqstep", DSV_USER_QUAL_TO_RC_QUAL(1) / 4, 1, DSV_RC_QUAL_MAX, NULL,
-            "max quality step for ABR, absolute quant amount in range [1, 400]. 1 = default (0.25%)" },
-    { "minqp", DSV_USER_QUAL_TO_RC_QUAL(0), 0, 100, pct_to_qual,
-            "minimum quality. 0 = default" },
-    { "maxqp", DSV_USER_QUAL_TO_RC_QUAL(100), 0, 100, pct_to_qual,
-            "maximum quality. 100 = default" },
-    { "iminqp", DSV_USER_QUAL_TO_RC_QUAL(5), 0, 100, pct_to_qual,
-            "minimum quality for intra frames. 5 = default" },
+            "max quality step for CRF/ABR rate control, absolute quant amount in range [1, 400]. 1 = default (0.25%)",
+            "generally not necessary to modify"},
+    { "minqp", -1, -1, 100, pct_to_qual,
+            "minimum quality. -1 = auto, -1 = default",
+            "use it to limit the CRF/ABR rate control algorithm"},
+    { "maxqp", -1, -1, 100, pct_to_qual,
+            "maximum quality. -1 = auto, -1 = default",
+            "use it to limit the CRF/ABR rate control algorithm"},
+    { "iminqp", -1, -1, 100, pct_to_qual,
+            "minimum quality for intra frames. -1 = auto, -1 = default",
+            "use it to limit the CRF/ABR rate control algorithm"},
     { "stabref", 0, 0, INT_MAX, NULL,
-            "period (in # of frames) to refresh the stability block tracking. 0 = auto-determine. 0 = default" },
+            "period (in # of frames) to refresh the stability block tracking. 0 = auto-determine. 0 = default",
+            "recommended to keep as auto-determine but good values are typically between half the framerate and twice the framerate"},
     { "scd", 1, 0, 1, NULL,
-            "do scene change detection. 1 = default" },
+            "do scene change detection. 1 = default",
+            "let the encoder insert intra frames when it decides that the scene has changed (sufficient difference between consecutive frames)"},
     { "tempaq", 1, 0, 1, NULL,
-            "do temporal adaptive quantization. If disabled, spatial methods will be used instead. 1 = default" },
+            "do temporal adaptive quantization. If disabled, spatial methods will be used instead. 1 = default",
+            "recommended to keep enabled, increases quality on features of the video that stay still"},
     { "bszx", -1, -1, 1, NULL,
-            "override block sizes in the x (horizontal) direction. -1 = auto-determine. -1 = default. 0 = 16, 1 = 32" },
+            "override block sizes in the x (horizontal) direction. -1 = auto-determine. -1 = default. 0 = 16, 1 = 32",
+            "16 is recommended for < 1920x1080 content"},
     { "bszy", -1, -1, 1, NULL,
-            "override block sizes in the y (vertical) direction. -1 = auto-determine. -1 = default. 0 = 16, 1 = 32" },
+            "override block sizes in the y (vertical) direction. -1 = auto-determine. -1 = default. 0 = 16, 1 = 32",
+            "16 is recommended for < 1920x1080 content"},
     { "scpct", 55, 0, 100, NULL,
-            "scene change percentage. 55 = default" },
+            "scene change percentage. 55 = default",
+            "decrease to make scene changes more common, increase to make them more infrequent"},
     { "skipthresh", 0, -1, INT_MAX, NULL,
-           "skip block threshold. -1 = disable. 0 = default, larger value means more likely to mark a block as skipped." },
+           "skip block threshold. -1 = disable. 0 = default, larger value means more likely to mark a block as skipped.",
+            "generally not necessary to modify"},
     { "varint", 1, 0, 1, NULL,
-            "intra frames that are created outside of the normal GOP cycle reset the GOP cycle if 1. 1 = default" },
-    { "psy", 1, 0, 1, NULL,
-           "enable/disable psychovisual optimizations. 1 = default" },
+            "intra frames that are created outside of the normal GOP cycle reset the GOP cycle if 1. 1 = default",
+            "generally good to keep this enabled unless you absolutely need an intra frame to exist every 'GOP' frames"},
+    { "psy", DSV_PSY_ALL, 0, DSV_PSY_ALL, NULL,
+           "enable/disable psychovisual optimizations. 255 = default",
+           "can hurt or help depending on content. can be beneficial to try both and see which is better.\n"
+           "\t\tcurrently defined bits (bit OR together to get multiple at the same time):\n"
+           "\t\t1 = adaptive quantization\n"
+           "\t\t2 = content analysis\n"
+           "\t\t4 = I-frame visual masking\n"
+           "\t\t8 = P-frame visual masking\n"
+           "\t\t16 = adaptive ringing transform\n"
+            },
     { "dib", 1, 0, 1, NULL,
-           "enable/disable boosting the quality of dark intra frames. 1 = default" },
+           "enable/disable boosting the quality of dark intra frames. 1 = default",
+           "helps retain details in darker scenes"},
     { "y4m", 0, 0, 1, NULL,
-            "set to 1 if input is in Y4M format, 0 if raw YUV. 0 = default" },
-    { NULL, 0, 0, 0, NULL, "" }
+            "set to 1 if input is in YUV4MPEG2 (Y4M) format, 0 if raw YUV. 0 = default",
+            "not all metadata will be passed through, Y4M parser is not a complete parser and some inputs could result in error"},
+    { "ifilter", 1, 0, 1, NULL,
+            "enable/disable intra frame deringing filter (essentially free assuming reasonable GOP length). 1 = default",
+            "helps reduce ringing introduced at lower bit rates due to longer subband filters"},
+    { "pfilter", 1, 0, 1, NULL,
+            "enable/disable inter frame cleanup filter (small decoding perf hit but very noticeable increase in quality). 1 = default",
+            "beneficial to coding efficiency and visual quality, highly recommended to keep enabled UNLESS source is very noisy"},
+    { "psharp", 1, 0, 1, NULL,
+            "inter frame sharpening. 0 = disabled, 1 = enabled, 1 = default",
+            "smart image sharpening, helps reduce blurring in motion"},
+    { NULL, 0, 0, 0, NULL, "", "" }
 };
 
 static struct PARAM dec_params[] = {
     { "out420p", 0, 0, 1, NULL,
-            "convert video to 4:2:0 chroma subsampling before saving output. 0 = default" },
+            "convert video to 4:2:0 chroma subsampling before saving output. 0 = default",
+            ""},
+    { "y4m", 0, 0, 1, NULL,
+            "write output as a YUV4MPEG2 (Y4M) file. 0 = default",
+            ""},
+    { "postsharp", 0, 0, 1, NULL,
+            "postprocessing/decoder side frame sharpening. 0 = disabled, 1 = enabled, 0 = default",
+            ""},
     { "drawinfo", 0, 0, (DSV_DRAW_STABHQ | DSV_DRAW_MOVECS | DSV_DRAW_IBLOCK), NULL,
-            "draw debugging information on the decoded frames (bit OR together to get multiple at the same time):\n\t\t1 = draw stability info\n\t\t2 = draw motion vectors\n\t\t4 = draw intra subblocks. 0 = default" },
-    { NULL, 0, 0, 0, NULL, "" }
+            "draw debugging information on the decoded frames (bit OR together to get multiple at the same time):\n\t\t1 = draw stability info\n\t\t2 = draw motion vectors\n\t\t4 = draw intra subblocks. 0 = default",
+            ""},
+    { NULL, 0, 0, 0, NULL, "", "" }
 };
 
 static struct {
@@ -215,10 +270,12 @@ usage_general(void)
     printf("usage: %s <e|d> [options]\n", p);
     printf("for more information about running the encoder: %s e help\n", p);
     printf("for more information about running the decoder: %s d help\n", p);
+    printf("for verbose information about encoder parameters: %s e vhelp\n", p);
+    printf("for verbose information about decoder parameters: %s d vhelp\n", p);
 }
 
 static void
-print_params(struct PARAM *pars)
+print_params(struct PARAM *pars, int extra)
 {
     int i;
 
@@ -228,6 +285,10 @@ print_params(struct PARAM *pars)
 
         printf("\t-%s : %s\n", par->prefix, par->desc);
         printf("\t      [min = %d, max = %d]\n", par->min, par->max);
+        if (extra) {
+            printf("\textra info: %s\n\n", par->extra);
+        }
+
     }
     printf("\t-inp= : input file. NOTE: if not specified, defaults to stdin\n");
     printf("\t-out= : output file. NOTE: if not specified, defaults to stdout\n");
@@ -237,34 +298,34 @@ print_params(struct PARAM *pars)
 }
 
 static void
-usage_encoder(void)
+usage_encoder(int extra)
 {
     char *p = progname;
 
     printf(DRV_HEADER);
     printf("usage: %s e [options]\n", p);
     printf("sample usage: %s e -inp=video.yuv -out=compressed.dsv -w=352 -h=288 -fps_num=24 -fps_den=1 -qp=85 -gop=15\n", p);
-    print_params(enc_params);
+    print_params(enc_params, extra);
 }
 
 static void
-usage_decoder(void)
+usage_decoder(int extra)
 {
     char *p = progname;
 
     printf(DRV_HEADER);
     printf("usage: %s d [options]\n", p);
     printf("sample usage: %s d -inp=video.dsv -out=decompressed.yuv -out420p=1\n", p);
-    print_params(dec_params);
+    print_params(dec_params, extra);
 }
 
 static void
-usage(void)
+usage(int extra)
 {
     if (encoding) {
-        usage_encoder();
+        usage_encoder(extra);
     } else {
-        usage_decoder();
+        usage_decoder(extra);
     }
 }
 
@@ -339,6 +400,12 @@ get_param(char *argv)
     int err = 0;
     struct PARAM *params;
 
+    if (strcmp("vhelp", p) == 0) {
+        return -1;
+    }
+    if (strcmp("help", p) == 0) {
+        return 0;
+    }
     if (*p != '-') {
         printf("strange argument: %s\n", p);
         return 0;
@@ -380,10 +447,7 @@ get_param(char *argv)
     for (i = 0; params[i].prefix != NULL; i++) {
         struct PARAM *par = &params[i];
         char buf[512];
-        if (strlen(par->prefix) >= sizeof(buf) - 2) continue;
-
-        sprintf(buf, "%s=", par->prefix);
-
+        snprintf(buf, sizeof(buf) - 1, "%s=", par->prefix);
         if (!prefixcmp(buf, &p)) {
             continue;
         }
@@ -406,7 +470,7 @@ init_params(int argc, char **argv)
 
     if (argc == 1) {
         printf("not enough args!\n");
-        usage();
+        usage(0);
         return 0;
     }
     argc--;
@@ -414,7 +478,11 @@ init_params(int argc, char **argv)
     while (argc > 0) {
         i = get_param(*argv);
         if (i == 0) {
-            usage();
+            usage(0);
+            return 0;
+        }
+        if (i == -1) {
+            usage(1);
             return 0;
         }
         argv += i;
@@ -447,7 +515,6 @@ static int
 writefile(char *n, unsigned char *buf, long len)
 {
     FILE *fp;
-    int ret = 1;
 
     if (n[0] == USE_STDIO_CHAR) {
         fp = stdout;
@@ -460,13 +527,18 @@ writefile(char *n, unsigned char *buf, long len)
     }
     if (fwrite(buf, 1, len, fp) != (unsigned) len) {
         perror("unable to write file");
-        ret = 0;
+        goto err;
     }
 
     if (n[0] != USE_STDIO_CHAR) {
         fclose(fp);
     }
-    return ret;
+    return 1;
+err:
+    if (n[0] != USE_STDIO_CHAR) {
+        fclose(fp);
+    }
+    return 0;
 }
 
 static int
@@ -484,6 +556,7 @@ encode(void)
     unsigned frno = 0;
     int nfr;
     int y4m_in = 0;
+    int write_eos = 1;
 
     if (verbose) {
         printf(DRV_HEADER);
@@ -502,6 +575,7 @@ encode(void)
     md.fps_den = get_optval(enc_params, "fps_den");
     md.aspect_num = get_optval(enc_params, "aspect_num");
     md.aspect_den = get_optval(enc_params, "aspect_den");
+    md.inter_sharpen = get_optval(enc_params, "psharp");
 
     if (opts.inp[0] == USE_STDIO_CHAR) {
         inpfile = stdin;
@@ -552,19 +626,22 @@ encode(void)
     picture = malloc(w * h * (3 + EXTRA_PAD)); /* allocate extra to be safe */
 
     enc.gop = get_optval(enc_params, "gop");
-
-    enc.scene_change_delta = get_optval(enc_params, "scpct");
+    if (enc.gop < 0) {
+        enc.gop = fps;
+    }
+    enc.scene_change_pct = get_optval(enc_params, "scpct");
     enc.do_scd = get_optval(enc_params, "scd");
     enc.intra_pct_thresh = get_optval(enc_params, "ipct");
     enc.quality = get_optval(enc_params, "qp");
     enc.skip_block_thresh = get_optval(enc_params, "skipthresh");
 
     enc.rc_mode = get_optval(enc_params, "rc_mode");
+    enc.rc_pergop = get_optval(enc_params, "rc_pergop");
     spec_bps = get_optval(enc_params, "kbps");
     if (enc.quality == DSV_USER_QUAL_TO_RC_QUAL(-1)) {
         int qual;
 
-        if (enc.rc_mode == DSV_RATE_CONTROL_CRF || spec_bps == AUTO_BITRATE) {
+        if (enc.rc_mode != DSV_RATE_CONTROL_ABR || spec_bps == AUTO_BITRATE) {
             qual = 85;
         } else {
             qual = estimate_quality(spec_bps, enc.gop, &md);
@@ -581,11 +658,50 @@ encode(void)
     enc.min_quality = get_optval(enc_params, "minqp");
     enc.max_quality = get_optval(enc_params, "maxqp");
     enc.min_I_frame_quality = get_optval(enc_params, "iminqp");
+    switch (enc.rc_mode) {
+        case DSV_RATE_CONTROL_CRF:
+            if (enc.min_quality < 0) {
+                enc.min_quality = enc.quality - DSV_USER_QUAL_TO_RC_QUAL(5);
+            }
+            if (enc.min_I_frame_quality < 0) {
+                enc.min_I_frame_quality = enc.quality - DSV_USER_QUAL_TO_RC_QUAL(2);
+            }
+            if (enc.max_quality < 0) {
+                enc.max_quality = DSV_RC_QUAL_MAX;
+            }
+            break;
+        case DSV_RATE_CONTROL_ABR:
+            if (enc.min_quality < 0) {
+                enc.min_quality = 0;
+            }
+            if (enc.min_I_frame_quality < 0) {
+                enc.min_I_frame_quality = DSV_USER_QUAL_TO_RC_QUAL(5);
+            }
+            if (enc.max_quality < 0) {
+                enc.max_quality = DSV_RC_QUAL_MAX;
+            }
+            break;
+        default:
+            if (enc.min_quality < 0) {
+                enc.min_quality = 0;
+            }
+            if (enc.min_I_frame_quality < 0) {
+                enc.min_I_frame_quality = DSV_USER_QUAL_TO_RC_QUAL(5);
+            }
+            if (enc.max_quality < 0) {
+                enc.max_quality = DSV_RC_QUAL_MAX;
+            }
+            break;
+    }
+
+    enc.min_quality = CLAMP(enc.min_quality, 0, DSV_RC_QUAL_MAX);
+    enc.min_I_frame_quality = CLAMP(enc.min_I_frame_quality, 0, DSV_RC_QUAL_MAX);
+    enc.max_quality = CLAMP(enc.max_quality, 0, DSV_RC_QUAL_MAX);
 
     enc.pyramid_levels = get_optval(enc_params, "pyrlevels");
     enc.stable_refresh = get_optval(enc_params, "stabref");
     if (enc.stable_refresh == 0) {
-        enc.stable_refresh = CLAMP(enc.gop, 1, 14);
+        enc.stable_refresh = CLAMP(fps, 1, 60);
     }
     enc.do_temporal_aq = get_optval(enc_params, "tempaq");
     enc.variable_i_interval = get_optval(enc_params, "varint");
@@ -594,9 +710,12 @@ encode(void)
     enc.effort = get_optval(enc_params, "effort");
     enc.do_psy = get_optval(enc_params, "psy");
     enc.do_dark_intra_boost = get_optval(enc_params, "dib");
+    enc.do_intra_filter = get_optval(enc_params, "ifilter");
+    enc.do_inter_filter = get_optval(enc_params, "pfilter");
 
     frno = get_optval(enc_params, "sfr");
     nfr = get_optval(enc_params, "nfr");
+    write_eos = !get_optval(enc_params, "noeos");
     if (nfr > 0) {
         maxframe = frno + nfr;
     } else {
@@ -609,29 +728,27 @@ encode(void)
 
     while (run) {
         int state;
+        int frame_read = 0;
         if (maxframe > 0 && frno >= (unsigned) maxframe) {
             goto end_of_stream;
         }
         if (y4m_in) {
-            if (dsv_y4m_read_seq(inpfile, picture, w, h, md.subsamp) < 0) {
-                DSV_ERROR(("failed to read frame %d", frno));
-                goto end_of_stream;
-            }
+            frame_read = dsv_y4m_read_seq(inpfile, picture, w, h, md.subsamp);
         } else {
             if (opts.inp[0] == USE_STDIO_CHAR) {
-                if (dsv_yuv_read_seq(inpfile, picture, w, h, md.subsamp) < 0) {
-                    DSV_ERROR(("failed to read frame %d", frno));
-                    goto end_of_stream;
-                }
+                frame_read = dsv_yuv_read_seq(inpfile, picture, w, h, md.subsamp);
             } else {
-                if (dsv_yuv_read(inpfile, frno, picture, w, h, md.subsamp) < 0) {
-                    DSV_ERROR(("failed to read frame %d", frno));
-                    goto end_of_stream;
-                }
+                frame_read = dsv_yuv_read(inpfile, frno, picture, w, h, md.subsamp);
             }
         }
-
+        if (frame_read < 0) {
+            if (frame_read == -1) {
+                DSV_ERROR(("failed to read frame %d", frno));
+            }
+            goto end_of_stream;
+        }
         frame = dsv_load_planar_frame(md.subsamp, picture, w, h);
+
         if (verbose) {
             printf("encoding frame %d\r", frno);
             fflush(stdout);
@@ -657,9 +774,11 @@ encode(void)
         frno++;
         continue;
 end_of_stream:
-        dsv_enc_end_of_stream(&enc, bufs);
-        savebuffer(&bufs[0]);
-        dsv_buf_free(&bufs[0]);
+        if (write_eos) {
+            dsv_enc_end_of_stream(&enc, bufs);
+            savebuffer(&bufs[0]);
+            dsv_buf_free(&bufs[0]);
+        }
         break;
     }
 
@@ -673,8 +792,10 @@ end_of_stream:
         mbps = kbps / 1024;
         printf("\nencoded %d bytes @ %d bps, %d kbps, %d KBps, %d mbps. fps = %d, bpf = %d\n",
                 bufsz, bps, kbps, kbps / 8, mbps, fps, bpf);
-        printf("target bitrate = %d bps  %d KBps  %d kbps\n",
-                enc.bitrate, enc.bitrate / (8 * 1024), enc.bitrate / 1024);
+        if (enc.rc_mode == DSV_RATE_CONTROL_ABR) {
+            printf("target bitrate = %d bps  %d KBps  %d kbps\n",
+                    enc.bitrate, enc.bitrate / (8 * 1024), enc.bitrate / 1024);
+        }
     }
 
     writefile(opts.out, enc_buf, bufsz);
@@ -716,7 +837,7 @@ read_packet(FILE *f, DSV_BUF *rb, int *packet_type)
                 hdr[0],hdr[1],hdr[2],hdr[3]));
         return DSV_PKT_ERR_4CC;
     }
-    /* DSV_INFO(("DSV version 1.%d", hdr[4])); */
+    /* DSV_INFO(("DSV version 2.%d", hdr[4])); */
     size = (hdr[DSV_PACKET_NEXT_OFFSET + 0] << 24) |
            (hdr[DSV_PACKET_NEXT_OFFSET + 1] << 16) |
            (hdr[DSV_PACKET_NEXT_OFFSET + 2] << 8) |
@@ -748,9 +869,9 @@ decode(void)
     DSV_BUF buffer;
     DSV_META *meta = NULL;
     DSV_FRAME *frame;
-    int code;
+    int code, first = 1;
     DSV_FNUM frameno = 0;
-    int to_420p;
+    int to_420p, as_y4m, postsharp;
     FILE *inpfile, *outfile;
 
     if (opts.inp[0] == USE_STDIO_CHAR) {
@@ -774,6 +895,8 @@ decode(void)
     }
     memset(&dec, 0, sizeof(dec));
     to_420p = get_optval(dec_params, "out420p");
+    as_y4m = get_optval(dec_params, "y4m");
+    postsharp = get_optval(dec_params, "postsharp");
     dec.draw_info = get_optval(dec_params, "drawinfo");
     if (verbose) {
         printf(DRV_HEADER);
@@ -824,6 +947,9 @@ decode(void)
                 } else if (meta->subsamp == DSV_SUBSAMP_411) {
                     conv411to420(&frame->planes[1], &f420->planes[1]);
                     conv411to420(&frame->planes[2], &f420->planes[2]);
+                } else if (meta->subsamp == DSV_SUBSAMP_410) {
+                    conv410to420(&frame->planes[1], &f420->planes[1]);
+                    conv410to420(&frame->planes[2], &f420->planes[2]);
                 }
                 { /* copy luma 1:1 */
                     DSV_PLANE *cs = frame->planes;
@@ -834,13 +960,40 @@ decode(void)
                         memcpy(DSV_GET_LINE(cd, i), DSV_GET_LINE(cs, i), rowlen);
                     }
                 }
+                if (postsharp) {
+                    dsv_post_process(f420->planes + 0);
+                }
+                if (first && as_y4m) {
+                    dsv_y4m_write_hdr(outfile, meta->width, meta->height,
+                           DSV_SUBSAMP_420, meta->fps_num, meta->fps_den,
+                           meta->aspect_num, meta->aspect_den);
+                    first = 0;
+                }
                 if (dsv_yuv_write(outfile, frameno, f420->planes) < 0) {
                     DSV_ERROR(("failed to write frame %d", frameno));
                 }
                 dsv_frame_ref_dec(f420);
             } else {
-                if (dsv_yuv_write(outfile, frameno, frame->planes) < 0) {
-                    DSV_ERROR(("failed to write frame %d", frameno));
+                if (as_y4m) {
+                    if (first) {
+                        dsv_y4m_write_hdr(outfile, meta->width, meta->height, meta->subsamp,
+                                meta->fps_num, meta->fps_den,
+                                meta->aspect_num, meta->aspect_den);
+                        first = 0;
+                    }
+                    dsv_y4m_write_frame_hdr(outfile);
+                }
+                if (postsharp) {
+                    DSV_FRAME *tfr = dsv_clone_frame(frame, 0);
+                    dsv_post_process(tfr->planes + 0);
+                    if (dsv_yuv_write_seq(outfile, tfr->planes) < 0) {
+                        DSV_ERROR(("failed to write frame %d", frameno));
+                    }
+                    dsv_frame_ref_dec(tfr);
+                } else {
+                    if (dsv_yuv_write_seq(outfile, frame->planes) < 0) {
+                        DSV_ERROR(("failed to write frame %d", frameno));
+                    }
                 }
             }
             if (verbose) {
@@ -908,12 +1061,13 @@ badarg:
 int
 main(int argc, char **argv)
 {
+    static char standard[2] = { USE_STDIO_CHAR, '\0' };
     int ret;
 
     progname = argv[0];
     /* default to stdin/out */
-    opts.inp = "-";
-    opts.out = "-";
+    opts.inp = standard;
+    opts.out = standard;
 
     ret = split_paths(argc, argv);
 

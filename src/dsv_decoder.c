@@ -4,7 +4,7 @@
  *   DSV-2
  *
  *     -
- *    =--     2024 EMMIR
+ *    =--  2024-2025 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -67,6 +67,9 @@ decode_meta(DSV_DECODER *d, DSV_BS *bs)
     fmt->aspect_num = dsv_bs_get_ueg(bs);
     fmt->aspect_den = dsv_bs_get_ueg(bs);
     DSV_DEBUG(("aspect ratio %d/%d", fmt->aspect_num, fmt->aspect_den));
+
+    fmt->inter_sharpen = dsv_bs_get_ueg(bs);
+    DSV_DEBUG(("inter sharpen %d", fmt->inter_sharpen));
 }
 
 /* B.2.3.4 Motion Data */
@@ -99,43 +102,69 @@ decode_motion(DSV_IMAGE *img, DSV_MV *mvs, DSV_BS *inbs, DSV_BUF *buf, int *stat
 
     for (j = 0; j < params->nblocks_v; j++) {
         for (i = 0; i < params->nblocks_h; i++) {
-            DSV_MV *mv = &mvs[i + j * params->nblocks_h];
-
-            mv->mode = dsv_bs_get_rle(&rle);
-            mv->eprm = dsv_bs_get_rle(&prrle);
+            DSV_MV *mv;
+            int mode, eprm, idx;
+            idx = i + j * params->nblocks_h;
+            mv = &mvs[idx];
+            mode = dsv_bs_get_rle(&rle);
+            eprm = dsv_bs_get_rle(&prrle);
             if (stats[DSV_MODE_STAT] == DSV_ZERO_MARKER) {
-                mv->mode = !mv->mode;
+                mode = !mode;
             }
             if (stats[DSV_EPRM_STAT] == DSV_ZERO_MARKER) {
-                mv->eprm = !mv->eprm;
+                eprm = !eprm;
             }
-            mv->skip = 0;
-            if (mv->mode == DSV_MODE_INTER) {
-                mv->skip = (img->blockdata[i + j * params->nblocks_h] & DSV_IS_SKIP);
-                /* B.2.3.4 Motion Data - Motion Vector Prediction */
-                if (!mv->skip) {
-                    /* if not skip */
-                    int px, py;
 
-                    dsv_movec_pred(mvs, params, i, j, &px, &py);
+            DSV_MV_SET_INTRA(mv, mode);
+            DSV_MV_SET_EPRM(mv, eprm);
+            img->blockdata[idx] &= ~(1 << DSV_STABLE_BIT);
+            img->blockdata[idx] |= eprm << DSV_EPRM_BIT;
+            if (img->blockdata[idx] & DSV_IS_SKIP) {
+                DSV_MV_SET_SKIP(mv, 1);
+            } else {
+                DSV_MV_SET_SKIP(mv, 0);
+            }
+            /* B.2.3.4 Motion Data - Motion Vector Prediction */
+            if (!DSV_MV_IS_SKIP(mv)) {
+                int px, py;
 
-                    mv->u.mv.x = dsv_bs_get_seg(bs + DSV_SUB_MV_X) + px;
-                    mv->u.mv.y = dsv_bs_get_seg(bs + DSV_SUB_MV_Y) + py;
-                } else {
-                    mv->u.mv.x = 0;
-                    mv->u.mv.y = 0;
+                dsv_movec_pred(mvs, params, i, j, &px, &py);
+                if (DSV_MV_IS_INTRA(mv)) {
+                    px = DSV_SAR(px, 2);
+                    py = DSV_SAR(py, 2);
+                }
+                mv->u.mv.x = dsv_bs_get_seg(bs + DSV_SUB_MV_X) + px;
+                mv->u.mv.y = dsv_bs_get_seg(bs + DSV_SUB_MV_Y) + py;
+                if (DSV_MV_IS_INTRA(mv)) {
+                    mv->u.mv.x *= 4;
+                    mv->u.mv.y *= 4;
+                }
+                if (dsv_neighbordif(mvs, params, i, j) > DSV_NDIF_THRESH) {
+                    img->blockdata[idx] |= (1 << DSV_STABLE_BIT);
                 }
             } else {
+                mv->u.mv.x = 0;
+                mv->u.mv.y = 0;
+                img->blockdata[idx] |= (1 << DSV_STABLE_BIT);
+            }
+
+            if (DSV_MV_IS_INTRA(mv)) {
                 /* B.2.3.4 Motion Data - Intra Sub-Block Mask Decoding */
                 if (dsv_bs_get_bit(bs + DSV_SUB_SBIM)) {
                     mv->submask = DSV_MASK_ALL_INTRA;
                 } else {
                     mv->submask = dsv_bs_get_bits(bs + DSV_SUB_SBIM, 4);
                 }
-                img->blockdata[i + j * params->nblocks_h] |= DSV_IS_INTRA;
+                if (dsv_bs_get_bit(bs + DSV_SUB_SBIM)) {
+                    mv->dc = dsv_bs_get_bits(bs + DSV_SUB_SBIM, 8) | DSV_SRC_DC_PRED;
+                } else {
+                    mv->dc = 0;
+                }
+                img->blockdata[idx] |= DSV_IS_INTRA;
             }
         }
     }
+
     dsv_bs_end_rle(&rle, 1);
     dsv_bs_end_rle(&prrle, 1);
 }
@@ -198,14 +227,15 @@ decode_intra_meta(DSV_IMAGE *img, DSV_BS *inbs, DSV_BUF *buf, int *stats)
         if (stats[DSV_MAINTAIN_STAT] == DSV_ZERO_MARKER) {
             bitm = !bitm;
         }
-        img->blockdata[i] |= (bitm << DSV_MAINTAIN_BIT) | (bitr << DSV_RINGING_BIT);
+        img->blockdata[i] |= (bitm << DSV_MAINTAIN_BIT);
+        img->blockdata[i] |= (bitr << DSV_RINGING_BIT);
     }
     dsv_bs_end_rle(&rle_r, 1);
     dsv_bs_end_rle(&rle_m, 1);
 }
 
 #define DEBUG_SHADE 255
-#define IDEBUG_SHADE (uint8_t) (~DEBUG_SHADE)
+#define IDEBUG_SHADE(x) 255
 
 static void
 drawvec(DSV_PLANE *fd, int x0, int y0, int x1, int y1, int bw, int bh)
@@ -245,21 +275,24 @@ drawvec(DSV_PLANE *fd, int x0, int y0, int x1, int y1, int bw, int bh)
 }
 
 static void
-draw_info(DSV_IMAGE *img, DSV_FRAME *output_pic, DSV_MV *mvs, int mode, int isP)
+draw_info(DSV_IMAGE *img, DSV_FRAME *dst, DSV_MV *mvs, int mode, int isP)
 {
     int i, j, k, x, y, a, b;
     int bw, bh;
     DSV_PLANE *lp;
     DSV_PARAMS *p = &img->params;
 
-    lp = output_pic->planes + 0; /* luma plane */
+    lp = dst->planes + 0; /* luma plane */
     bw = p->blk_w;
     bh = p->blk_h;
     for (j = 0; j < p->nblocks_v; j++) {
         y = j * bh;
         memset(DSV_GET_LINE(lp, y), DEBUG_SHADE, lp->stride);
         for (i = 0; i < p->nblocks_h; i++) {
-            DSV_MV *mv = &mvs[i + j * p->nblocks_h];
+            DSV_MV *mv = NULL;
+            if (mvs) {
+                mv = &mvs[i + j * p->nblocks_h];
+            }
             x = i * bw;
             for (k = y; k < y + bh && k < lp->h; k++) {
                 if (x < lp->w) {
@@ -284,32 +317,31 @@ draw_info(DSV_IMAGE *img, DSV_FRAME *output_pic, DSV_MV *mvs, int mode, int isP)
                     }
                 }
             }
-            if (isP && (mode & DSV_DRAW_MOVECS) && mv->mode == DSV_MODE_INTER) {
+            if (mv && isP && (mode & DSV_DRAW_MOVECS)) {
                 drawvec(lp, x, y, mv->u.mv.x, mv->u.mv.y, bw, bh);
             }
-            if (isP && (mode & DSV_DRAW_IBLOCK) && mv->mode == DSV_MODE_INTRA) {
+            if (mv && isP && (mode & DSV_DRAW_IBLOCK)) {
                 if (mv->submask & DSV_MASK_INTRA00) {
                     a = x + bw * 1 / 4;
                     b = y + bh * 1 / 4;
-                    *DSV_GET_XY(lp, a, b) = IDEBUG_SHADE;
+                    *DSV_GET_XY(lp, a, b) = IDEBUG_SHADE(*DSV_GET_XY(lp, a, b));
                 }
                 if (mv->submask & DSV_MASK_INTRA01) {
                     a = x + bw * 3 / 4;
                     b = y + bh * 1 / 4;
-                    *DSV_GET_XY(lp, a, b) = IDEBUG_SHADE;
+                    *DSV_GET_XY(lp, a, b) = IDEBUG_SHADE(*DSV_GET_XY(lp, a, b));
                 }
                 if (mv->submask & DSV_MASK_INTRA10) {
                     a = x + bw * 1 / 4;
                     b = y + bh * 3 / 4;
-                    *DSV_GET_XY(lp, a, b) = IDEBUG_SHADE;
+                    *DSV_GET_XY(lp, a, b) = IDEBUG_SHADE(*DSV_GET_XY(lp, a, b));
                 }
                 if (mv->submask & DSV_MASK_INTRA11) {
                     a = x + bw * 3 / 4;
                     b = y + bh * 3 / 4;
-                    *DSV_GET_XY(lp, a, b) = IDEBUG_SHADE;
+                    *DSV_GET_XY(lp, a, b) = IDEBUG_SHADE(*DSV_GET_XY(lp, a, b));
                 }
             }
-
         }
     }
 }
@@ -361,13 +393,14 @@ dsv_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
     DSV_BS bs;
     DSV_IMAGE *img;
     DSV_PARAMS *p;
-    int c, quant, is_ref, pkt_type, subsamp;
+    int i, quant, is_ref, pkt_type, subsamp, do_filter;
     DSV_META *meta = &d->vidmeta;
     DSV_FRAME *residual;
     DSV_MV *mvs = NULL;
     DSV_FNUM fno;
     DSV_FMETA fm;
     int stats[DSV_MAX_STAT];
+    DSV_COEFS coefs[3];
 
     *fn = -1;
 
@@ -433,7 +466,7 @@ dsv_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
     p->nblocks_h = DSV_UDIV_ROUND_UP(meta->width, p->blk_w);
     p->nblocks_v = DSV_UDIV_ROUND_UP(meta->height, p->blk_h);
 
-    /* read statistics bits + quant */
+    /* read statistics bits + filter flag + quant */
     dsv_bs_align(&bs);
     memset(stats, DSV_ONE_MARKER, sizeof(stats));
 
@@ -445,8 +478,8 @@ dsv_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
         stats[DSV_MODE_STAT] = dsv_bs_get_bit(&bs);
         stats[DSV_EPRM_STAT] = dsv_bs_get_bit(&bs);
     }
+    do_filter = dsv_bs_get_bit(&bs);
     quant = dsv_bs_get_bits(&bs, DSV_MAX_QP_BITS);
-
     /* read frame metadata (stability / skip, motion data / adaptive quant) */
     dsv_bs_align(&bs);
     img->blockdata = dsv_alloc(p->nblocks_h * p->nblocks_v);
@@ -465,40 +498,19 @@ dsv_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
     fm.params = p;
     fm.blockdata = img->blockdata;
     fm.isP = p->has_ref;
-
+    fm.fnum = fno;
     /* B.2.3.5 Image Data - Plane Decoding */
-    for (c = 0; c < 3; c++) {
-        uint8_t *encoded_buf;
-        DSV_COEFS coefs;
-        int plen, framesz;
+    dsv_mk_coefs(coefs, subsamp, meta->width, meta->height);
 
-        dsv_bs_align(&bs);
-
-        plen = dsv_bs_get_bits(&bs, 32);
-
-        dsv_bs_align(&bs);
-        if (c > 0) {
-            coefs.width = DSV_ROUND_POW2(residual->planes[c].w, 1);
-            coefs.height = DSV_ROUND_POW2(residual->planes[c].h, 1);
+    for (i = 0; i < 3; i++) {
+        fm.cur_plane = i;
+        if (dsv_decode_plane(&bs, &coefs[i], quant, &fm)) {
+            dsv_inv_sbt(&residual->planes[i], &coefs[i], quant, &fm);
+            if (!fm.isP) {
+                dsv_intra_filter(quant, p, &fm, i, &residual->planes[i], do_filter);
+            }
         } else {
-            coefs.width = residual->planes[c].w;
-            coefs.height = residual->planes[c].h;
-        }
-
-        framesz = coefs.width * coefs.height * sizeof(int);
-        if (plen <= 0 || plen > (framesz * 2)) {
-            DSV_ERROR(("plane length was strange: %d", plen));
-            break;
-        }
-        encoded_buf = buffer->data + dsv_bs_ptr(&bs);
-        dsv_bs_skip(&bs, plen);
-
-        coefs.data = dsv_alloc(framesz);
-        fm.cur_plane = c;
-        dsv_decode_plane(encoded_buf, plen, &coefs, quant, &fm);
-        dsv_inv_sbt(&residual->planes[c], &coefs, quant, &fm);
-        if (coefs.data) {
-            dsv_free(coefs.data);
+            DSV_ERROR(("decoding error in plane %d", i));
         }
     }
 
@@ -509,7 +521,6 @@ dsv_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
     if (!img->out_frame) {
         img->out_frame = dsv_mk_frame(subsamp, meta->width, meta->height, 1);
     }
-
     if (p->has_ref) {
         DSV_IMAGE *ref = d->ref;
         if (ref == NULL) {
@@ -520,8 +531,10 @@ dsv_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
 #if 0 /* SHOW RESIDUAL */
         dsv_frame_copy(img->out_frame, residual);
 #else
-        dsv_add_pred(mvs, &fm, quant, residual, img->out_frame, ref->ref_frame);
+        p->temporal_mc = DSV_TEMPORAL_MC(fno);
+        dsv_add_pred(mvs, &fm, quant, residual, img->out_frame, ref->ref_frame, do_filter);
 #endif
+
     } else {
         dsv_frame_copy(img->out_frame, residual);
     }
@@ -539,6 +552,10 @@ dsv_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
     }
 
     /* release resources */
+    if (coefs[0].data) { /* only the first pointer is actual allocated data */
+        dsv_free(coefs[0].data);
+        coefs[0].data = NULL;
+    }
     if (is_ref) {
         if (d->ref) {
             img_unref(d->ref);

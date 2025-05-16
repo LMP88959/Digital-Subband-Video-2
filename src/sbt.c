@@ -4,7 +4,7 @@
  *   DSV-2
  *
  *     -
- *    =--     2024 EMMIR
+ *    =--  2024-2025 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -19,31 +19,38 @@
 #define IS_P    (fm->isP)
 #define IS_LUMA (fm->cur_plane == 0)
 
-#define LL_CONDITION   (IS_LUMA  && (!IS_P && (l == 3 || l == 4)))
-#define L2A_CONDITION  (IS_LUMA  && (!IS_P && (l == 2)))
-#define L2_CONDITION   (!IS_LUMA && (!IS_P && (l == 2)))
-#define L1_CONDITION   (IS_LUMA  && (!IS_P && (l == 1)))
+#define LLI_CONDITION  (IS_LUMA  && !IS_P && (l == 4))
+#define LLP_CONDITION  (IS_LUMA  &&  IS_P && (l == 4))
+#define L2A_CONDITION  (IS_LUMA  && !IS_P && (l == 2))
+#define CC_CONDITION   (!IS_LUMA && !IS_P && (l >= 1 && l <= (lvls - 2)))
+#define L1_CONDITION   (IS_LUMA  && !IS_P && (l == 1))
+
+#define DO_SHREX 1 /* shrink-expand */
+#define SHREX4I 3
+#define SHREX4P 2
+#define SHREX2 3
+#define FWD_SCALE52(x) ((x) * 5 / 2)
+#define INV_SCALE52(x) ((x) * 2 / 5)
+#define FWD_SCALE20(x) ((x) * 2)
+#define INV_SCALE20(x) ((x) / 2)
+#define FWD_SCALE30(x) ((x) * 3)
+#define INV_SCALE30(x) ((x) / 3)
+#define FWD_SCALE40(x) ((x) * 4)
+#define INV_SCALE40(x) ((x) / 4)
 
 #define FWD_SCALENONE(x) (x)
 #define INV_SCALENONE(x) (x)
 
-#define FWD_SCALE20(x) ((x) * 2)
-#define INV_SCALE20(x) ((x) / 2)
-
-#define FWD_SCALE25(x) (5 * (x) / 2)
-#define INV_SCALE25(x) (2 * (x) / 5)
-
-#define INV_SCALEASF(x) (3 * (x) / 8) /* pseudo-normalize ASF coefficients */
-
 /* C.3 Subband Transforms
  *
- * P frames are exclusively Haar
+ * P frames are exclusively Haar except for L4
  * I frames have some non-Haar filters.
- *    - the second highest frequency level of the luma plane has support
- *       for adaptive filtering.
- *    - Haar is used for every level of the luma plane besides
- *       the four highest frequency levels.
- *    - chroma is exclusively Haar besides the second highest frequency level.
+ *    - the highest frequency level of the luma plane uses the
+ *        Asymmetric Subband Filter.
+ *    - the second highest frequency level of the luma plane has
+ *        support for adaptive filtering.
+ *    - the fourth highest frequency level of the luma plane does not use Haar.
+ *    - chroma is mostly non-Haar.
  *
  * The second level is very important psychovisually. It is the 'bridge' between
  * blurry and sharp and should be preserved and emphasized as much as possible.
@@ -85,19 +92,13 @@ cpysub(DSV_SBC *dst, DSV_SBC *src, unsigned w, unsigned h, unsigned stride)
 static int
 round2(int v)
 {
-    if (v < 0) {
-        return -(((-v) + 1) >> 1);
-    }
-    return (v + 1) >> 1;
+    return (v + (v < 0 ? -1 : 1)) / 2;
 }
 
 static int
 round4(int v)
 {
-    if (v < 0) {
-        return -(((-v) + 2) >> 2);
-    }
-    return (v + 2) >> 2;
+    return (v + (v < 0 ? -2 : 2)) / 4;
 }
 
 static int
@@ -122,10 +123,15 @@ reflect(int i, int n)
  * xxA = filter rounding addition
  */
 
-/* lower level (L3 and L4) filter */
-#define LL0 5
-#define LLS 5
+/* lower level (L4) filter */
+#define LL0 17
+#define LLS 7
 #define LLA (1 << (LLS - 1))
+
+/* chroma (CC) filter */
+#define CC0 3
+#define CCS 4
+#define CCA (1 << (CCS - 1))
 
 /* a poor filter with heavy ringing actually gives us benefits
  * with regard to perceptual quality for natural images by
@@ -133,7 +139,7 @@ reflect(int i, int n)
  * preserving them better while also creating a general illusion of detail */
 
 /* L2 ringing filter */
-#define R20 3
+#define R20 2
 #define R2S 2
 #define R2A (1 << (R2S - 1))
 
@@ -143,7 +149,7 @@ reflect(int i, int n)
 #define S2A (1 << (S2S - 1))
 
 /* reflected get */
-#define rg(x, s) reflect(x, n) * s
+#define rg(x, s) reflect(x, (n - 1)) * s
 
 /* scaling + reordering coefficients from LHLHLHLH to LLLLHHHH */
 #define SCALE_PACK(scaleL, scaleH, s)                 \
@@ -159,6 +165,27 @@ reflect(int i, int n)
   for (i = 0; i < even_n; i += 2) {                   \
       out[(i + 0) * s] = scaleL(in[(i + 0) / 2 * s]); \
       out[(i + 1) * s] = scaleH(in[(i + h) / 2 * s]); \
+  }                                                   \
+  if (n & 1) {                                        \
+      out[(n - 1) * s] = scaleL(in[(n - 1) / 2 * s]); \
+  }
+
+/* same as above but also SHREX's the high freq coef */
+#define SCALE_PACK_SHREX(scaleL, scaleH, s, shrex)    \
+  for (i = 0; i < even_n; i += 2) {                   \
+      int th = scaleH(in[(i + 1) * s]);               \
+      out[(i + 0) / 2 * s] = scaleL(in[(i + 0) * s]); \
+      out[(i + h) / 2 * s] = th - DSV_SAR(th, shrex); \
+  }                                                   \
+  if (n & 1) {                                        \
+      out[(n - 1) / 2 * s] = scaleL(in[(n - 1) * s]); \
+  }
+
+#define UNSCALE_UNPACK_SHREX(scaleL, scaleH, s, shrex)       \
+  for (i = 0; i < even_n; i += 2) {                   \
+      int th = scaleH(in[(i + h) / 2 * s]);           \
+      out[(i + 0) * s] = scaleL(in[(i + 0) / 2 * s]); \
+      out[(i + 1) * s] = th + DSV_SAR(th, shrex); \
   }                                                   \
   if (n & 1) {                                        \
       out[(n - 1) * s] = scaleL(in[(n - 1) / 2 * s]); \
@@ -205,7 +232,8 @@ reflect(int i, int n)
   delta *= 2;                                                       \
   v[0] op v[s] >> 1;                                                \
   for (i = 2; i < even_n; i += 2) {                                 \
-      if (sb[(sbp >> DSV_BLOCK_INTERP_P) * sbs] & DSV_IS_RINGING) { \
+      int bv = sb[(sbp >> DSV_BLOCK_INTERP_P) * sbs];               \
+      if (bv & DSV_IS_RINGING) {                                    \
           MAKE_5_TAP(v, R0, RA, RS, op, s);                         \
       } else {                                                      \
           MAKE_5_TAP(v, C0, CA, CS, op, s);                         \
@@ -216,19 +244,16 @@ reflect(int i, int n)
 /* Filter coefficients for this encoder's ASF analysis implementation.
  * These coefficients and forward filtering methods can be unique to each
  * encoder since the decoder simply does a 3-tap synthesis. */
-#define LPFA 182
-#define LPFB 76
-#define LPFC 31
-#define LPFD 12
-#define LPFE 4
+#define LPFA 46
+#define LPFB 19
+#define LPFC 8
+#define LPFD 3
+#define LPFE 1
 
-#define HPFA 138
-#define HPFB 70
-#define HPFC 9
-#define HPFD 6
-#define HPFE 4
+#define HPFA 32
+#define HPFB 16
 
-#define ASFNORM 8
+#define ASFNORM 6
 
 #define ASF93_LO(i, vs, s) \
                   (LPFA *  vs[rg(i + 0, s)] \
@@ -239,44 +264,85 @@ reflect(int i, int n)
 
 #define ASF93_HI(i, vs, s)\
                   (HPFA *  vs[rg(i + 0, s)] \
-                 - HPFB * (vs[rg(i - 1, s)] + vs[rg(i + 1, s)]) \
-                 - HPFC * (vs[rg(i - 2, s)] + vs[rg(i + 2, s)])\
-                 + HPFD * (vs[rg(i - 3, s)] + vs[rg(i + 3, s)])\
-                 + HPFE * (vs[rg(i - 4, s)] + vs[rg(i + 4, s)]))
+                 - HPFB * (vs[rg(i - 1, s)] + vs[rg(i + 1, s)]))
 
 static void
-filterLL(DSV_SBC *out, DSV_SBC *in, int n, int s)
+filterLLI(DSV_SBC *out, DSV_SBC *in, int n, int s)
 {
     int i, even_n = n & ~1, h = n + (n & 1);
     DO_SIMPLE_HI(in, -=, s);
     DO_5_TAP_LO(in, LL0, LLA, LLS, +=, s);
-    SCALE_PACK(FWD_SCALE20, FWD_SCALE20, s);
+    SCALE_PACK_SHREX(FWD_SCALE52, FWD_SCALE40, s, SHREX4I);
 }
 
 static void
-ifilterLL(DSV_SBC *out, DSV_SBC *in, int n, int s)
+ifilterLLI(DSV_SBC *out, DSV_SBC *in, int n, int s)
 {
     int i, even_n = n & ~1, h = n + (n & 1);
-    UNSCALE_UNPACK(INV_SCALE20, INV_SCALE20, s);
-    DO_5_TAP_LO(out, LL0, LLA, LLS, -=, s);
-    DO_SIMPLE_HI(out, +=, s);
+    UNSCALE_UNPACK_SHREX(INV_SCALE52, INV_SCALE40, s, SHREX4I);
+    /* Combined these for speed:
+       DO_5_TAP_LO(out, LL0, LLA, LLS, -=, s);
+       DO_SIMPLE_HI(out, +=, s);
+    */
+    out[0] -= out[s] >> 1;
+    for (i = 2; i < even_n; i += 2) {
+        MAKE_5_TAP(out, LL0, LLA, LLS, -=, s);
+        out[(i - 1) * s] += (out[(i - 2) * s] + out[i * s] + 1) >> 1;
+    }
+    if (n & 1) {
+        /* intentional use of 'i' after the for-loop */
+        out[(i - 1) * s] += (out[(i - 2) * s] + out[i * s] + 1) >> 1;
+    } else {
+        out[(n - 1) * s] += out[(n - 2) * s];
+    }
 }
 
 static void
-filterL2(DSV_SBC *out, DSV_SBC *in, int n, int s)
+filterLLP(DSV_SBC *out, DSV_SBC *in, int n, int s)
 {
     int i, even_n = n & ~1, h = n + (n & 1);
     DO_SIMPLE_HI(in, -=, s);
-    DO_SIMPLE_LO(in, +=, s);
-    SCALE_PACK(FWD_SCALE25, FWD_SCALE20, s);
+    DO_5_TAP_LO(in, LL0, LLA, LLS, +=, s);
+    SCALE_PACK_SHREX(FWD_SCALE52, FWD_SCALE30, s, SHREX4P);
 }
 
 static void
-ifilterL2(DSV_SBC *out, DSV_SBC *in, int n, int s)
+ifilterLLP(DSV_SBC *out, DSV_SBC *in, int n, int s)
 {
     int i, even_n = n & ~1, h = n + (n & 1);
-    UNSCALE_UNPACK(INV_SCALE25, INV_SCALE20, s);
-    DO_SIMPLE_LO(out, -=, s);
+    UNSCALE_UNPACK_SHREX(INV_SCALE52, INV_SCALE30, s, SHREX4P);
+    /* Combined these for speed:
+       DO_5_TAP_LO(out, LL0, LLA, LLS, -=, s);
+       DO_SIMPLE_HI(out, +=, s);
+    */
+    out[0] -= out[s] >> 1;
+    for (i = 2; i < even_n; i += 2) {
+        MAKE_5_TAP(out, LL0, LLA, LLS, -=, s);
+        out[(i - 1) * s] += (out[(i - 2) * s] + out[i * s] + 1) >> 1;
+    }
+    if (n & 1) {
+        /* intentional use of 'i' after the for-loop */
+        out[(i - 1) * s] += (out[(i - 2) * s] + out[i * s] + 1) >> 1;
+    } else {
+        out[(n - 1) * s] += out[(n - 2) * s];
+    }
+}
+
+static void
+filterCC(DSV_SBC *out, DSV_SBC *in, int n, int s)
+{
+    int i, even_n = n & ~1, h = n + (n & 1);
+    DO_SIMPLE_HI(in, -=, s);
+    DO_5_TAP_LO(in, CC0, CCA, CCS, +=, s);
+    SCALE_PACK(FWD_SCALE20, FWD_SCALENONE, s);
+}
+
+static void
+ifilterCC(DSV_SBC *out, DSV_SBC *in, int n, int s)
+{
+    int i, even_n = n & ~1, h = n + (n & 1);
+    UNSCALE_UNPACK(INV_SCALE20, INV_SCALENONE, s);
+    DO_5_TAP_LO(out, CC0, CCA, CCS, -=, s);
     DO_SIMPLE_HI(out, +=, s);
 }
 
@@ -286,14 +352,22 @@ filterL2_a(DSV_SBC *out, DSV_SBC *in, int n, int s, uint8_t *sb, int delta, int 
     int i, sbp = 0, even_n = n & ~1, h = n + (n & 1);
     DO_SIMPLE_HI(in, -=, s);
     DO_5_TAP_LO_A(in, S20, S2A, S2S, R20, R2A, R2S, +=, s);
-    SCALE_PACK(FWD_SCALE25, FWD_SCALE20, s);
+#if DO_SHREX
+    SCALE_PACK_SHREX(FWD_SCALE20, FWD_SCALE30, s, SHREX2);
+#else
+    SCALE_PACK(FWD_SCALE20, FWD_SCALE30, s);
+#endif
 }
 
 static void
 ifilterL2_a(DSV_SBC *out, DSV_SBC *in, int n, int s, uint8_t *sb, int delta, int sbs)
 {
     int i, sbp = 0, even_n = n & ~1, h = n + (n & 1);
-    UNSCALE_UNPACK(INV_SCALE25, INV_SCALE20, s);
+#if DO_SHREX
+    UNSCALE_UNPACK_SHREX(INV_SCALE20, INV_SCALE30, s, SHREX2);
+#else
+    UNSCALE_UNPACK(INV_SCALE20, INV_SCALE30, s);
+#endif
     DO_5_TAP_LO_A(out, S20, S2A, S2S, R20, R2A, R2S, -=, s);
     DO_SIMPLE_HI(out, +=, s);
 }
@@ -310,32 +384,32 @@ filterL1(DSV_SBC *out, DSV_SBC *in, int n, int s)
 
     for (i = 1; i < n - 2; i += 2) {
         L = ASF93_LO((i - 1), in, s);
-        H = ASF93_HI((i - 0), in, s) * 3; /* scale H up a little */
+        H = ASF93_HI((i - 0), in, s);
         out[(i + 0) / 2 * s] = (L + (1 << (ASFNORM - 2))) >> (ASFNORM - 1);
-        out[(i + n) / 2 * s] = (H + (1 << (ASFNORM - 2))) >> (ASFNORM - 1);
+        out[(i + n) / 2 * s] = (H + (1 << (ASFNORM - 4))) >> (ASFNORM - 3);
     }
     /* deal with edges */
-    in[s] -= (in[0] + in[2 * s] + 1) >> 1;
+    in[1 * s] -= (in[0 * s] + in[2 * s] + 1) >> 1;
     in[(n - 3) * s] -= (in[(n - 4) * s] + in[(n - 2) * s] + 1) >> 1;
     if (!(n & 1)) {
         in[(n - 1) * s] -= in[(n - 2) * s];
     }
-    in[0] += in[s] >> 1;
-    in[2 * s] += (in[s] + in[3 * s] + 2) >> 2;
+    in[0 * s] += in[1 * s] >> 1;
+    in[2 * s] += (in[1 * s] + in[3 * s] + 2) >> 2;
     in[(n - 2) * s] += (in[(n - 3) * s] + in[(n - 1) * s] + 2) >> 2;
 
-    out[0 / 2 * s] = FWD_SCALE20(in[0]);
-    out[n / 2 * s] = FWD_SCALE25(in[s]);
+    out[0 / 2 * s] = FWD_SCALE20(in[0 * s]);
+    out[n / 2 * s] = FWD_SCALE40(in[1 * s]);
 
     out[((n - 2) + 0) / 2 * s] = FWD_SCALE20(in[((n - 2) + 0) * s]);
-    out[((n - 2) + n) / 2 * s] = FWD_SCALE25(in[((n - 2) + 1) * s]);
+    out[((n - 2) + n) / 2 * s] = FWD_SCALE40(in[((n - 2) + 1) * s]);
 }
 
 static void
 ifilterL1(DSV_SBC *out, DSV_SBC *in, int n, int s)
 {
     int i, even_n = n & ~1, h = n + (n & 1);
-    UNSCALE_UNPACK(INV_SCALE20, INV_SCALEASF, s);
+    UNSCALE_UNPACK(INV_SCALE20, INV_SCALE40, s);
     DO_SIMPLE_INV(out, s);
 }
 
@@ -694,7 +768,7 @@ sbc2p(DSV_PLANE *p, DSV_COEFS *dc)
         uint8_t *line = DSV_GET_LINE(p, y);
         for (x = 0; x < p->w; x++) {
             v = (d[x] + 128);
-            line[x] = v > 255 ? 255 : v < 0 ? 0 : v;
+            line[x] = CLAMP(v, 0, 255);
         }
         d += dc->width;
     }
@@ -717,10 +791,11 @@ nlevels(int w, int h)
 extern void
 dsv_fwd_sbt(DSV_PLANE *src, DSV_COEFS *dst, DSV_FMETA *fm)
 {
-    int lvls, l;
-    int w = dst->width;
-    int h = dst->height;
+    int w, h, lvls, l;
     DSV_SBC *temp_buf_pad;
+
+    w = dst->width;
+    h = dst->height;
 
     p2sbc(dst, src);
 
@@ -729,10 +804,12 @@ dsv_fwd_sbt(DSV_PLANE *src, DSV_COEFS *dst, DSV_FMETA *fm)
     temp_buf_pad = temp_buf + w;
 
     for (l = 1; l <= lvls; l++) {
-        if (LL_CONDITION) {
-            fwd_2d(temp_buf_pad, dst->data, w, h, l, filterLL);
-        } else if (L2_CONDITION) {
-            fwd_2d(temp_buf_pad, dst->data, w, h, l, filterL2);
+        if (LLI_CONDITION) {
+            fwd_2d(temp_buf_pad, dst->data, w, h, l, filterLLI);
+        } else if (LLP_CONDITION) {
+            fwd_2d(temp_buf_pad, dst->data, w, h, l, filterLLP);
+        } else if (CC_CONDITION) {
+            fwd_2d(temp_buf_pad, dst->data, w, h, l, filterCC);
         } else if (L2A_CONDITION) {
             fwd_L2a_2d(temp_buf_pad, dst->data, w, h, l, fm);
         } else if (L1_CONDITION) {
@@ -747,22 +824,24 @@ dsv_fwd_sbt(DSV_PLANE *src, DSV_COEFS *dst, DSV_FMETA *fm)
 extern void
 dsv_inv_sbt(DSV_PLANE *dst, DSV_COEFS *src, int q, DSV_FMETA *fm)
 {
-    int lvls, l;
-    int w = src->width;
-    int h = src->height;
+    int w, h, lvls, l, hqp;
     DSV_SBC *temp_buf_pad;
-    int hqp;
+
+    w = src->width;
+    h = src->height;
 
     lvls = nlevels(w, h);
     alloc_temp((w + 2) * (h + 2));
     temp_buf_pad = temp_buf + w;
 
-    hqp = (fm->cur_plane == 0) ? (q / 8) : (q / 2);
+    hqp = (fm->cur_plane == 0) ? (q / (fm->isP ? 14 : 8)) : (q / 2);
     for (l = lvls; l > 0; l--) {
-        if (LL_CONDITION) {
-            inv_2d(temp_buf_pad, src->data, w, h, l, ifilterLL);
-        } else if (L2_CONDITION) {
-            inv_2d(temp_buf_pad, src->data, w, h, l, ifilterL2);
+        if (LLI_CONDITION) {
+            inv_2d(temp_buf_pad, src->data, w, h, l, ifilterLLI);
+        } else if (LLP_CONDITION) {
+            inv_2d(temp_buf_pad, src->data, w, h, l, ifilterLLP);
+        } else if (CC_CONDITION) {
+            inv_2d(temp_buf_pad, src->data, w, h, l, ifilterCC);
         } else if (L2A_CONDITION) {
             inv_L2a_2d(temp_buf_pad, src->data, w, h, l, fm);
         } else if (L1_CONDITION) {

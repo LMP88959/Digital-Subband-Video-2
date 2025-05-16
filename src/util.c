@@ -4,7 +4,7 @@
  *   DSV-2
  *
  *     -
- *    =--     2024 EMMIR
+ *    =--  2024-2025 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -39,6 +39,9 @@ estimate_bitrate(int quality, int gop, DSV_META *md)
         case DSV_SUBSAMP_420:
         case DSV_SUBSAMP_411:
             bpf = 352 * 288 * 3 / 2;
+            break;
+        case DSV_SUBSAMP_410:
+            bpf = 352 * 288 * 9 / 8;
             break;
     }
     if (gop == DSV_GOP_INTRA) {
@@ -128,6 +131,23 @@ conv411to420(DSV_PLANE *srcf, DSV_PLANE *dstf)
         for (j = 0; j < h; j += 2) {
             n = (j < h - 1) ? j + 1 : h - 1;
             dst[i + dstf->stride * (j >> 1)] = (src[(i >> 1) + s * j] + src[(i >> 1) + s * n] + 1) >> 1;
+        }
+    }
+}
+
+extern void
+conv410to420(DSV_PLANE *srcf, DSV_PLANE *dstf)
+{
+    int i, j, w, h;
+    uint8_t *src, *dst;
+
+    w = srcf->w * 2;
+    h = srcf->h * 2;
+    src = srcf->data;
+    dst = dstf->data;
+    for (j = 0; j < h; j++) {
+        for (i = 0; i < w; i++) {
+            dst[i + dstf->stride * j] = src[(i >> 1) + srcf->stride * (j >> 1)];
         }
     }
 }
@@ -253,6 +273,8 @@ dsv_y4m_read_hdr(FILE *in, int *w, int *h, int *subsamp, int *framerate, int *as
                     *subsamp = DSV_SUBSAMP_420;
                 } else if (line[0] == '4' && line[1] == '1' && line[2] == '1') {
                     *subsamp = DSV_SUBSAMP_411;
+                } else if (line[0] == '4' && line[1] == '1' && line[2] == '0') {
+                    *subsamp = DSV_SUBSAMP_410;
                 } else if (line[0] == '4' && line[1] == '2' && line[2] == '2') {
                     *subsamp = DSV_SUBSAMP_422;
                 } else if (line[0] == '4' && line[1] == '4' && line[2] == '4') {
@@ -286,6 +308,7 @@ extern int
 dsv_y4m_read_seq(FILE *in, uint8_t *o, int w, int h, int subsamp)
 {
     size_t npix, chrsz = 0;
+    size_t nread;
 #define Y4M_FRAME_HDR "FRAME\n"
     size_t hdrsz;
     char line[8];
@@ -294,7 +317,11 @@ dsv_y4m_read_seq(FILE *in, uint8_t *o, int w, int h, int subsamp)
     if (in == NULL) {
         return -1;
     }
-    if (fread(line, 1, hdrsz, in) != hdrsz) {
+    nread = fread(line, 1, hdrsz, in);
+    if (nread != hdrsz) {
+        if (nread == 0) {
+            return -2;
+        }
         DSV_ERROR(("failed read"));
         return -1;
     }
@@ -314,13 +341,63 @@ dsv_y4m_read_seq(FILE *in, uint8_t *o, int w, int h, int subsamp)
         case DSV_SUBSAMP_411:
             chrsz = npix / 4;
             break;
+        case DSV_SUBSAMP_410:
+            chrsz = npix / 16;
+            break;
         default:
             DSV_ERROR(("unsupported format"));
             DSV_ASSERT(0);
             break;
     }
     if (fread(o, 1, npix + chrsz + chrsz, in) != (npix + chrsz + chrsz)) {
+        fpos_t pos;
+        if (fgetpos(in, &pos)) {
+            return -1;
+        }
+        if ((pos % (npix + chrsz + chrsz)) == 0) {
+            return -2;
+        }
         return -1;
     }
     return 0;
+}
+
+extern void
+dsv_y4m_write_hdr(FILE *out, int w, int h, int subsamp, int fpsn, int fpsd, int aspn, int aspd)
+{
+    char buf[256];
+    char *subs = "420";
+
+    switch (subsamp) {
+         case DSV_SUBSAMP_444:
+             subs = "444";
+             break;
+         case DSV_SUBSAMP_422:
+             subs = "422";
+             break;
+         case DSV_SUBSAMP_420:
+             subs = "420";
+             break;
+         case DSV_SUBSAMP_411:
+             subs = "411";
+             break;
+         case DSV_SUBSAMP_410:
+             subs = "410";
+             break;
+         default:
+             DSV_ERROR(("unsupported format"));
+             DSV_ASSERT(0);
+             break;
+     }
+
+    sprintf(buf, "YUV4MPEG2 W%d H%d F%d:%d A%d:%d Ip C%s\n",
+                        w, h, fpsn, fpsd, aspn, aspd, subs);
+    fwrite(buf, 1, strlen(buf), out);
+}
+
+extern void
+dsv_y4m_write_frame_hdr(FILE *out)
+{
+    char *fh = "FRAME\n";
+    fwrite(fh, 1, strlen(fh), out);
 }

@@ -4,7 +4,7 @@
  *   DSV-2
  *
  *     -
- *    =--     2024 EMMIR
+ *    =--  2024-2025 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -32,7 +32,7 @@ extern "C" {
 #define DSV_FOURCC_1     'S'
 #define DSV_FOURCC_2     'V'
 #define DSV_FOURCC_3     '2'
-#define DSV_VERSION_MINOR 1
+#define DSV_VERSION_MINOR 7
 
 /* B.1.1 Packet Type */
 #define DSV_PT_META 0x00
@@ -89,6 +89,7 @@ extern "C" {
 #define DSV_SUBSAMP_UYVY (0x10 | DSV_SUBSAMP_422)
 #define DSV_SUBSAMP_420  (DSV_FMT_DIV2_H | DSV_FMT_DIV2_V)
 #define DSV_SUBSAMP_411  (DSV_FMT_DIV4_H | DSV_FMT_FULL_V)
+#define DSV_SUBSAMP_410  (DSV_FMT_DIV4_H | DSV_FMT_DIV4_V) /* NOTE: not actual 4:1:0, actual 4:1:0 would be quarter horizontal, half vertical */
 
 #define DSV_FORMAT_H_SHIFT(format) (((format) >> 2) & 0x3)
 #define DSV_FORMAT_V_SHIFT(format) ((format) & 0x3)
@@ -104,6 +105,8 @@ typedef struct {
     int fps_den;
     int aspect_num;
     int aspect_den;
+
+    int inter_sharpen;
 } DSV_META;
 
 typedef struct {
@@ -136,6 +139,8 @@ typedef struct {
     int border;
 } DSV_FRAME;
 
+#define DSV_NDIF_THRESH   (2 * 4)
+
 #define DSV_STABLE_STAT   0
 #define DSV_MAINTAIN_STAT 1
 #define DSV_RINGING_STAT  2
@@ -162,12 +167,43 @@ typedef struct {
         } mv;
         int32_t all;
     } u;
-    uint8_t mode;
-    uint8_t eprm;
+#define DSV_IS_SUBPEL(v) (((v)->u.mv.x | (v)->u.mv.y) & 3)
+#define DSV_IS_QPEL(v) (((v)->u.mv.x | (v)->u.mv.y) & 1)
+#define DSV_IS_DIAG(v) (((v)->u.mv.x & 3) && ((v)->u.mv.y & 3))
+#define DSV_TEMPORAL_MC(fno) ((fno) % 2)
+
+#define DSV_MV_BIT_INTRA    0
+#define DSV_MV_BIT_EPRM     1
+#define DSV_MV_BIT_MAINTAIN 2
+#define DSV_MV_BIT_SKIP     3
+#define DSV_MV_BIT_RINGING  4
+#define DSV_MV_BIT_NOXMITY  5 /* don't transmit luma residual */
+#define DSV_MV_BIT_NOXMITC  6 /* don't transmit chroma residual */
+#define DSV_MV_BIT_SIMCMPLX 7
+
+#define DSV_MV_IS_INTRA(mv)     ((mv)->flags & (1 << DSV_MV_BIT_INTRA))
+#define DSV_MV_IS_EPRM(mv)      ((mv)->flags & (1 << DSV_MV_BIT_EPRM))
+#define DSV_MV_IS_MAINTAIN(mv)  ((mv)->flags & (1 << DSV_MV_BIT_MAINTAIN))
+#define DSV_MV_IS_SKIP(mv)      ((mv)->flags & (1 << DSV_MV_BIT_SKIP))
+#define DSV_MV_IS_RINGING(mv)   ((mv)->flags & (1 << DSV_MV_BIT_RINGING))
+#define DSV_MV_IS_NOXMITY(mv)   ((mv)->flags & (1 << DSV_MV_BIT_NOXMITY))
+#define DSV_MV_IS_NOXMITC(mv)   ((mv)->flags & (1 << DSV_MV_BIT_NOXMITC))
+#define DSV_MV_IS_SIMCMPLX(mv)  ((mv)->flags & (1 << DSV_MV_BIT_SIMCMPLX))
+
+#define DSV_BIT_SET(v, b, on) ((v) &= ~(1 << (b)), (v) |= ((on) << (b)))
+#define DSV_MV_SET_INTRA(mv, b)     (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_INTRA, b))
+#define DSV_MV_SET_EPRM(mv, b)      (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_EPRM, b))
+#define DSV_MV_SET_MAINTAIN(mv, b)  (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_MAINTAIN, b))
+#define DSV_MV_SET_SKIP(mv, b)      (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_SKIP, b))
+#define DSV_MV_SET_RINGING(mv, b)   (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_RINGING, b))
+#define DSV_MV_SET_NOXMITY(mv, b)   (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_NOXMITY, b))
+#define DSV_MV_SET_NOXMITC(mv, b)   (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_NOXMITC, b))
+#define DSV_MV_SET_SIMCMPLX(mv, b)  (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_SIMCMPLX, b))
+    uint32_t flags;
+    uint16_t err;
+#define DSV_SRC_DC_PRED 0x100
+    uint16_t dc;
     uint8_t submask;
-    uint8_t maintain;
-    uint8_t use_ringing;
-    uint8_t skip;
 } DSV_MV;
 
 #define DSV_GET_LINE(p, y) ((p)->data + (y) * (p)->stride)
@@ -209,6 +245,8 @@ typedef struct {
     /* number of blocks horizontally and vertically in the image */
     int nblocks_h;
     int nblocks_v;
+
+    int temporal_mc; /* temporal motion compensation state */
 } DSV_PARAMS;
 
 typedef struct {
@@ -257,7 +295,7 @@ extern char *dsv_lvlname[DSV_LEVEL_DEBUG + 1];
 #if 1
 #define DSV_ASSERT(x) do {                  \
     if (!(x)) {                             \
-        DSV_ERROR(("assert: " #x));           \
+        DSV_ERROR(("assert: " #x));         \
         exit(-1);                           \
     }                                       \
 } while(0)

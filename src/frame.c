@@ -4,7 +4,7 @@
  *   DSV-2
  *
  *     -
- *    =--     2024 EMMIR
+ *    =--  2024-2025 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -54,7 +54,6 @@ dsv_mk_coefs(DSV_COEFS *c, int format, int width, int height)
     c[2].height = chroma_height;
 
     c2len = c[2].width * c[2].height;
-
     c[0].data = dsv_alloc((c0len + c1len + c2len) * sizeof(DSV_SBC));
     c[1].data = c[0].data + c0len;
     c[2].data = c[0].data + c0len + c1len;
@@ -234,101 +233,203 @@ dsv_ds2x_frame_luma(DSV_FRAME *dst, DSV_FRAME *src)
     }
 }
 
-#define PADSZ 4
+#define SUBDIV 4
 
-extern DSV_FRAME *
-dsv_extend_frame(DSV_FRAME *frame)
+#define MKHORIZ(start)       \
+        p[(i + 0 + start)] + \
+        p[(i + 1 + start)] + \
+        p[(i + 2 + start)] + \
+        p[(i + 3 + start)]
+
+#define MKVERT(start)                 \
+        p[(i + 0 + start) * stride] + \
+        p[(i + 1 + start) * stride] + \
+        p[(i + 2 + start) * stride] + \
+        p[(i + 3 + start) * stride]
+
+static void
+downsample_strip(DSV_FRAME *frame, int plane, int pos, uint8_t *out)
 {
-    int i, j, k;
+    int i, o = 0;
+    uint8_t *p;
+    DSV_PLANE *pl;
+    unsigned stride;
+    int len, rem, sum = 0;
 
-    if (!frame->border || (DSV_FRAME_BORDER <= 0)) {
-        return frame;
+    pl = &frame->planes[plane];
+    stride = pl->stride;
+
+    switch (pos) {
+        default:
+            DSV_ASSERT(0);
+            return;
+        case 0:
+            len = pl->h & ~(SUBDIV - 1);
+            rem = pl->h & (SUBDIV - 1);
+
+            p = pl->data + 0;
+            for (i = 0; i < len; i += SUBDIV) {
+#if SUBDIV == 16
+                out[o++] = (MKVERT(0) + MKVERT(4) + MKVERT(8) + MKVERT(12) + 8) >> 4;
+#elif SUBDIV == 8
+                out[o++] = (MKVERT(0) + MKVERT(4) + 4) >> 3;
+#elif SUBDIV == 4
+                out[o++] = (MKVERT(0) + 2) >> 2;
+#endif
+            }
+            if (rem) {
+                p = pl->data + len * stride;
+                for (i = 0; i < rem; i++) {
+                    sum += p[i * stride];
+                }
+                out[o] = sum / rem;
+            }
+            break;
+        case 1:
+            len = pl->h & ~(SUBDIV - 1);
+            rem = pl->h & (SUBDIV - 1);
+
+            p = pl->data + (pl->w - 1);
+            for (i = 0; i < len; i += SUBDIV) {
+#if SUBDIV == 16
+                out[o++] = (MKVERT(0) + MKVERT(4) + MKVERT(8) + MKVERT(12) + 8) >> 4;
+#elif SUBDIV == 8
+                out[o++] = (MKVERT(0) + MKVERT(4) + 4) >> 3;
+#elif SUBDIV == 4
+                out[o++] = (MKVERT(0) + 2) >> 2;
+#endif
+            }
+            if (rem) {
+                p = pl->data + (pl->w - 1) + len * stride;
+                for (i = 0; i < rem; i++) {
+                    sum += p[i * stride];
+                }
+                out[o] = sum / rem;
+            }
+            break;
+        case 2:
+            len = pl->w & ~(SUBDIV - 1);
+            rem = pl->w & (SUBDIV - 1);
+
+            p = pl->data;
+            for (i = 0; i < len; i += SUBDIV) {
+#if SUBDIV == 16
+                out[o++] = (MKHORIZ(0) + MKHORIZ(4) + MKHORIZ(8) + MKHORIZ(12) + 8) >> 4;
+#elif SUBDIV == 8
+                out[o++] = (MKHORIZ(0) + MKHORIZ(4) + 4) >> 3;
+#elif SUBDIV == 4
+                out[o++] = (MKHORIZ(0) + 2) >> 2;
+#endif
+            }
+            if (rem) {
+                p = pl->data + len;
+                for (i = 0; i < rem; i++) {
+                    sum += p[i];
+                }
+                out[o] = sum / rem;
+            }
+            break;
+        case 3:
+            len = pl->w & ~(SUBDIV - 1);
+            rem = pl->w & (SUBDIV - 1);
+
+            p = pl->data + (pl->h - 1) * stride;
+            for (i = 0; i < len; i += SUBDIV) {
+#if SUBDIV == 16
+                out[o++] = (MKHORIZ(0) + MKHORIZ(4) + MKHORIZ(8) + MKHORIZ(12) + 8) >> 4;
+#elif SUBDIV == 8
+                out[o++] = (MKHORIZ(0) + MKHORIZ(4) + 4) >> 3;
+#elif SUBDIV == 4
+                out[o++] = (MKHORIZ(0) + 2) >> 2;
+#endif
+            }
+            if (rem) {
+                p = pl->data + len + (pl->h - 1) * stride;
+                for (i = 0; i < rem; i++) {
+                    sum += p[i];
+                }
+                out[o] = sum / rem;
+            }
+            break;
+    }
+}
+
+static void
+extend_plane(DSV_FRAME *frame, int p)
+{
+    int i, j;
+    DSV_PLANE *c = frame->planes + p;
+    int width = c->w;
+    int height = c->h;
+    int total_w = width + DSV_FRAME_BORDER * 2;
+    uint8_t *dst, *line;
+    uint8_t *ls, *rs, *ts, *bs; /* left, right, top, bottom strips */
+    int tl, tr, bl, br; /* top left, top right, bottom left, bottom right */
+
+    ls = dsv_alloc(4 * height / SUBDIV);
+    rs = dsv_alloc(4 * height / SUBDIV);
+    ts = dsv_alloc(4 * width / SUBDIV);
+    bs = dsv_alloc(4 * width / SUBDIV);
+    downsample_strip(frame, p, 0, ls);
+    downsample_strip(frame, p, 1, rs);
+    downsample_strip(frame, p, 2, ts);
+    downsample_strip(frame, p, 3, bs);
+    tl = (ts[0] + ls[0] + 1) >> 1;
+    tr = (ts[(width / SUBDIV) - 1] + rs[0] + 1) >> 1;
+    bl = (ls[(height / SUBDIV) - 1] + bs[0] + 1) >> 1;
+    br = (bs[(width / SUBDIV) - 1] + rs[(height / SUBDIV) - 1] + 1) >> 1;
+
+    for (j = 0; j < height; j++) {
+        line = DSV_GET_LINE(c, j);
+
+        memset(line - DSV_FRAME_BORDER, ls[j / SUBDIV], DSV_FRAME_BORDER);
+        for (i = width; i < (width + 1); i++) {
+            line[i] = line[width - 1];
+        }
+        memset(line + width, rs[j / SUBDIV], DSV_FRAME_BORDER);
+    }
+    for (j = 0; j < DSV_FRAME_BORDER; j++) {
+        dst = DSV_GET_XY(c, -DSV_FRAME_BORDER, -j - 1);
+        memset(dst, tl, DSV_FRAME_BORDER);
+        for (i = DSV_FRAME_BORDER; i < (total_w - DSV_FRAME_BORDER); i++) {
+            dst[i] = ts[(i - DSV_FRAME_BORDER) / SUBDIV];
+        }
+        memset(dst + total_w - DSV_FRAME_BORDER, tr, DSV_FRAME_BORDER);
+        dst = DSV_GET_XY(c, -DSV_FRAME_BORDER, height + j);
+        memset(dst, bl, DSV_FRAME_BORDER);
+        for (i = DSV_FRAME_BORDER; i < (total_w - DSV_FRAME_BORDER); i++) {
+            dst[i] = bs[(i - DSV_FRAME_BORDER) / SUBDIV];
+        }
+        memset(dst + total_w - DSV_FRAME_BORDER, br, DSV_FRAME_BORDER);
     }
 
-    for (k = 0; k < 3; k++) {
-        DSV_PLANE *c = frame->planes + k;
-        int width = c->w;
-        int height = c->h;
-        int total_w = width + DSV_FRAME_BORDER * 2;
-        uint8_t *dst, *line;
-        int fill;
-        int padh = PADSZ;
-        int padv = PADSZ;
-        if (c == 0) {
-            fill = 0;
-        } else {
-            fill = 128;
-            padh >>= DSV_FORMAT_H_SHIFT(frame->format);
-            padv >>= DSV_FORMAT_V_SHIFT(frame->format);
-        }
-        for (j = 0; j < c->h; j++) {
-            line = DSV_GET_LINE(c, j);
-            for (i = -padh; i < 0; i++) {
-                line[i] = line[0];
-            }
-            memset(line - DSV_FRAME_BORDER, fill, DSV_FRAME_BORDER - padh);
-            for (i = width; i < (width + padh + 1); i++) {
-                line[i] = line[width - 1];
-            }
-            memset(line + width + padh, fill, DSV_FRAME_BORDER - padh);
-        }
-        for (i = 1; i <= padv; i++) {
-            dst = DSV_GET_XY(c, -DSV_FRAME_BORDER, -i);
-            memcpy(dst, DSV_GET_XY(c, -DSV_FRAME_BORDER, 0), total_w);
-            dst = DSV_GET_XY(c, -DSV_FRAME_BORDER, height + i - 1);
-            memcpy(dst, DSV_GET_XY(c, -DSV_FRAME_BORDER, height - 1), total_w);
-        }
-
-        for (j = padv; j < DSV_FRAME_BORDER; j++) {
-            dst = DSV_GET_XY(c, -DSV_FRAME_BORDER, -j - 1);
-            memset(dst, fill, total_w);
-            dst = DSV_GET_XY(c, -DSV_FRAME_BORDER, height + j);
-            memset(dst, fill, total_w);
-        }
-    }
-    return frame;
+    dsv_free(ls);
+    dsv_free(rs);
+    dsv_free(ts);
+    dsv_free(bs);
 }
 
 extern DSV_FRAME *
 dsv_extend_frame_luma(DSV_FRAME *frame)
 {
-    int i, j;
-    DSV_PLANE *c = frame->planes + 0;
-    int width = c->w;
-    int height = c->h;
-    int total_w = width + DSV_FRAME_BORDER * 2;
-    uint8_t *dst, *line;
-    int fill = 0;
-
-    if (!frame->border) {
+    if (!frame->border || (DSV_FRAME_BORDER <= 0)) {
         return frame;
     }
+    extend_plane(frame, 0);
+    return frame;
+}
 
-    for (j = 0; j < c->h; j++) {
-        line = DSV_GET_LINE(c, j);
-        for (i = -PADSZ; i < 0; i++) {
-            line[i] = line[0];
-        }
-        memset(line - DSV_FRAME_BORDER, fill, DSV_FRAME_BORDER - PADSZ);
-        for (i = width; i < (width + PADSZ + 1); i++) {
-            line[i] = line[width - 1];
-        }
-        memset(line + width + PADSZ, fill, DSV_FRAME_BORDER - PADSZ);
-    }
-    for (i = 1; i <= PADSZ; i++) {
-        dst = DSV_GET_XY(c, -DSV_FRAME_BORDER, -i);
-        memcpy(dst, DSV_GET_XY(c, -DSV_FRAME_BORDER, 0), total_w);
-        dst = DSV_GET_XY(c, -DSV_FRAME_BORDER, height + i - 1);
-        memcpy(dst, DSV_GET_XY(c, -DSV_FRAME_BORDER, height - 1), total_w);
-    }
+extern DSV_FRAME *
+dsv_extend_frame(DSV_FRAME *frame)
+{
+    int i;
 
-    for (j = PADSZ; j < DSV_FRAME_BORDER; j++) {
-        dst = DSV_GET_XY(c, -DSV_FRAME_BORDER, -j - 1);
-        memset(dst, fill, total_w);
-        dst = DSV_GET_XY(c, -DSV_FRAME_BORDER, height + j);
-        memset(dst, fill, total_w);
+    if (!frame->border || (DSV_FRAME_BORDER <= 0)) {
+        return frame;
     }
-
+    for (i = 0; i < 3; i++) {
+        extend_plane(frame, i);
+    }
     return frame;
 }
 
