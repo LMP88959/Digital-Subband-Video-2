@@ -1,0 +1,12 @@
+DSV 2.7 - May 16, 2025
+    Better and faster motion estimation through better candidate MV selection and reducing diagonal searches
+    Better rate control including the addition of CRF encoding (finally)
+    More accurate inter/intra mode decision and RDO
+    Temporal + anisotropic motion compensation for better subpixel motion
+    Intra frame deringing filter
+    Inter frame cleanup filter
+    Fast local de-gradient / sharpening filter to reduce blurriness
+    Haar is used at L3 rather than a longer filter now to reduce both ringing artifacts and also increase sharpness
+    Simplified HZCC a bit
+    Refactored decoding code
+    YUV 4:1:0 support
