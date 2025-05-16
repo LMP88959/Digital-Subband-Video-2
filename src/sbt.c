@@ -802,25 +802,6 @@ dsv_fwd_sbt(DSV_PLANE *src, DSV_COEFS *dst, DSV_FMETA *fm)
     lvls = nlevels(w, h);
     alloc_temp((w + 2) * (h + 2));
     temp_buf_pad = temp_buf + w;
-//    {
-//        int i;
-//#define NTEST 16
-//        DSV_SBC data[NTEST];
-//        DSV_SBC tmp[NTEST];
-//        srand(4);
-//        for ( i = 0 ; i < NTEST; i++){
-//            data[i] = (rand() & 255) - 128;
-//            printf("%d, ", data[i]);
-//        }
-//        printf("\n");
-//        filterL1(tmp, data, NTEST, 1);
-//        ifilterL1(data, tmp, NTEST, 1);
-//        for ( i = 0 ; i < NTEST; i++){
-//            printf("%d, ", data[i]);
-//        }
-//        printf("\n");
-//        exit(0);
-//    }
 
     for (l = 1; l <= lvls; l++) {
         if (LLI_CONDITION) {
