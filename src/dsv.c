@@ -4,7 +4,7 @@
  *   DSV-2
  *
  *     -
- *    =--     2024 EMMIR
+ *    =--  2024-2025 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -51,6 +51,9 @@ dsv_alloc(int size)
     void *p;
 
     p = calloc(1, size + 16);
+    if (!p) {
+        return NULL;
+    }
     *((int32_t *) p) = size;
     allocated++;
     allocated_bytes += size;
@@ -159,6 +162,7 @@ extern int
 dsv_yuv_read(FILE *in, int fno, uint8_t *o, int width, int height, int subsamp)
 {
     size_t npix, offset, chrsz = 0;
+    size_t nread;
 
     if (in == NULL) {
         return -1;
@@ -214,6 +218,10 @@ dsv_yuv_read(FILE *in, int fno, uint8_t *o, int width, int height, int subsamp)
             offset = fno * npix * 3 / 2;
             chrsz = npix / 4;
             break;
+        case DSV_SUBSAMP_410:
+            offset = fno * npix * 9 / 8;
+            chrsz = npix / 16;
+            break;
         default:
             DSV_ERROR(("unsupported format"));
             DSV_ASSERT(0);
@@ -221,9 +229,28 @@ dsv_yuv_read(FILE *in, int fno, uint8_t *o, int width, int height, int subsamp)
     }
 
     if (fseek(in, offset, SEEK_SET)) {
+        fpos_t pos;
+        if (fgetpos(in, &pos)) {
+            return -1;
+        }
+        if ((pos % (npix + chrsz + chrsz)) == 0) {
+            return -2;
+        }
         return -1;
     }
-    if (fread(o, 1, npix + chrsz + chrsz, in) != (npix + chrsz + chrsz)) {
+
+    nread = fread(o, 1, npix + chrsz + chrsz, in);
+    if (nread != (npix + chrsz + chrsz)) {
+        fpos_t pos;
+        if (nread == 0) {
+            return -2;
+        }
+        if (fgetpos(in, &pos)) {
+            return -1;
+        }
+        if ((pos % (npix + chrsz + chrsz)) == 0) {
+            return -2;
+        }
         return -1;
     }
     return 0;
@@ -233,6 +260,7 @@ extern int
 dsv_yuv_read_seq(FILE *in, uint8_t *o, int width, int height, int subsamp)
 {
     size_t npix, chrsz = 0;
+    size_t nread;
 
     if (in == NULL) {
         return -1;
@@ -249,12 +277,26 @@ dsv_yuv_read_seq(FILE *in, uint8_t *o, int width, int height, int subsamp)
         case DSV_SUBSAMP_411:
             chrsz = npix / 4;
             break;
+        case DSV_SUBSAMP_410:
+            chrsz = npix / 16;
+            break;
         default:
             DSV_ERROR(("unsupported format"));
             DSV_ASSERT(0);
             break;
     }
-    if (fread(o, 1, npix + chrsz + chrsz, in) != (npix + chrsz + chrsz)) {
+    nread = fread(o, 1, npix + chrsz + chrsz, in);
+    if (nread != (npix + chrsz + chrsz)) {
+        fpos_t pos;
+        if (nread == 0) {
+            return -2;
+        }
+        if (fgetpos(in, &pos)) {
+            return -1;
+        }
+        if ((pos % (npix + chrsz + chrsz)) == 0) {
+            return -2;
+        }
         return -1;
     }
     return 0;
@@ -309,12 +351,19 @@ seg_bits(int v)
     return len;
 }
 
+/* approximate R/D cost of a motion vector */
 extern int
-dsv_mv_cost(DSV_MV *vecs, DSV_PARAMS *p, int i, int j, int mx, int my)
+dsv_mv_cost(DSV_MV *vecs, DSV_PARAMS *p, int i, int j, int mx, int my, int q, int sqr)
 {
-    int px, py;
+    int px, py, bits;
+
     dsv_movec_pred(vecs, p, i, j, &px, &py);
-    return seg_bits(mx - px) + seg_bits(my - py);
+    bits = seg_bits(mx - px) + seg_bits(my - py);
+    bits += ((bits * ((q * q) >> 10)) >> 8);
+    if (sqr) {
+        return bits * bits;
+    }
+    return bits;
 }
 
 /* B.2.3.4 Motion Data - Motion Vector Prediction */
@@ -327,28 +376,57 @@ dsv_movec_pred(DSV_MV *vecs, DSV_PARAMS *p, int x, int y, int *px, int *py)
 
     if (x > 0) { /* left */
         mv = (vecs + y * p->nblocks_h + (x - 1));
-        if (mv->mode == DSV_MODE_INTER) {
-            vx[0] = mv->u.mv.x;
-            vy[0] = mv->u.mv.y;
-        }
+        vx[0] = mv->u.mv.x;
+        vy[0] = mv->u.mv.y;
     }
     if (y > 0) { /* top */
         mv = (vecs + (y - 1) * p->nblocks_h + x);
-        if (mv->mode == DSV_MODE_INTER) {
-            vx[1] = mv->u.mv.x;
-            vy[1] = mv->u.mv.y;
-        }
+        vx[1] = mv->u.mv.x;
+        vy[1] = mv->u.mv.y;
+
     }
     if (x > 0 && y > 0) { /* top-left */
         mv = (vecs + (y - 1) * p->nblocks_h + (x - 1));
-        if (mv->mode == DSV_MODE_INTER) {
-            vx[2] = mv->u.mv.x;
-            vy[2] = mv->u.mv.y;
-        }
+        vx[2] = mv->u.mv.x;
+        vy[2] = mv->u.mv.y;
     }
 
     *px = pred(vx[0], vx[1], vx[2]);
     *py = pred(vy[0], vy[1], vy[2]);
+}
+
+/* how similar a motion vector is to its top / left neighbors */
+extern int
+dsv_neighbordif(DSV_MV *vecs, DSV_PARAMS *p, int x, int y)
+{
+    DSV_MV *mv;
+    DSV_MV *cmv;
+    int d0, d1, cmx, cmy;
+    int vx[2], vy[2];
+
+    cmv = &vecs[x + y * p->nblocks_h];
+    cmx = cmv->u.mv.x;
+    cmy = cmv->u.mv.y;
+    if (abs(cmx) < 2 && abs(cmy) < 2) {
+        return 0;
+    }
+    vx[0] = vx[1] = cmx;
+    vy[0] = vy[1] = cmy;
+    if (x > 0) { /* left */
+        mv = (vecs + y * p->nblocks_h + (x - 1));
+        vx[0] = mv->u.mv.x;
+        vy[0] = mv->u.mv.y;
+    }
+    if (y > 0) { /* top */
+        mv = (vecs + (y - 1) * p->nblocks_h + x);
+        vx[1] = mv->u.mv.x;
+        vy[1] = mv->u.mv.y;
+    }
+    /* magnitude of current motion vector subtracted from its left neighbor */
+    d0 = abs(vx[0] - cmx) + abs(vy[0] - cmy);
+    /* magnitude of current motion vector subtracted from its top neighbor */
+    d1 = abs(vx[1] - cmx) + abs(vy[1] - cmy);
+    return (d0 + d1) / 3;
 }
 
 extern int
