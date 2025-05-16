@@ -42,7 +42,6 @@ typedef struct {
 #define DSV_DRAW_IBLOCK 4 /* intra subblocks */
     int draw_info; /* set by user */
     int got_metadata;
-    int quant;
 } DSV_DECODER;
 
 #define DSV_DEC_OK        0
