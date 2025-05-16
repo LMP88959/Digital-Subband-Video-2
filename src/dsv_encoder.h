@@ -4,7 +4,7 @@
  *   DSV-2
  *
  *     -
- *    =--     2024 EMMIR
+ *    =--  2024-2025 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -23,7 +23,7 @@ extern "C" {
 
 #include "dsv_internal.h"
 
-#define DSV_ENCODER_VERSION 4
+#define DSV_ENCODER_VERSION 10
 
 #define DSV_GOP_INTRA 0
 #define DSV_GOP_INF   INT_MAX
@@ -36,6 +36,7 @@ extern "C" {
 
 #define DSV_RATE_CONTROL_CRF  0 /* constant rate factor */
 #define DSV_RATE_CONTROL_ABR  1 /* one pass average bitrate */
+#define DSV_RATE_CONTROL_CQP  2 /* constant quantization parameter */
 
 #define DSV_MAX_PYRAMID_LEVELS 5
 
@@ -62,6 +63,7 @@ typedef struct _DSV_ENCDATA {
     struct _DSV_ENCDATA *refdata;
 
     DSV_MV *final_mvs;
+    int avg_err;
 } DSV_ENCDATA;
 
 typedef struct {
@@ -73,8 +75,17 @@ typedef struct {
 
     int do_scd; /* scene change detection */
     int do_temporal_aq; /* toggle temporal adaptive quantization for I frames */
-    int do_psy; /* enable psychovisual optimizations */
+#define DSV_PSY_ADAPTIVE_QUANT      (1 << 0)
+#define DSV_PSY_CONTENT_ANALYSIS    (1 << 1)
+#define DSV_PSY_I_VISUAL_MASKING    (1 << 2)
+#define DSV_PSY_P_VISUAL_MASKING    (1 << 3)
+#define DSV_PSY_ADAPTIVE_RINGING    (1 << 4)
+
+#define DSV_PSY_ALL 0xff
+    int do_psy; /* BITFIELD enable psychovisual optimizations */
     int do_dark_intra_boost; /* boost quality in dark intra frames */
+    int do_intra_filter; /* deringing filter on intra frames */
+    int do_inter_filter; /* cleanup filter on inter frames */
 
     /* threshold for skip block determination. -1 = disable
     Larger value = more likely to mark it as skipped */
@@ -90,28 +101,32 @@ typedef struct {
     /* approximate average bitrate desired */
     unsigned bitrate;
     /* for ABR */
+    int rc_pergop; /* update rate control per GOP instead of per frame */
     int min_q_step;
     int max_q_step;
     int min_quality; /* 0...DSV_MAX_QUALITY */
     int max_quality; /* 0...DSV_MAX_QUALITY */
     int min_I_frame_quality; /* 0...DSV_MAX_QUALITY */
+    int prev_I_frame_quality;
 
     int intra_pct_thresh; /* 0-100% */
-    int scene_change_delta;
+    int scene_change_pct;
     unsigned stable_refresh; /* # frames after which stability accum resets */
     int pyramid_levels;
 
     /* used internally */
     unsigned rc_qual;
-    /* bpf = bytes per frame */
-#define DSV_BPF_RESET 256 /* # frames after which average bpf resets */
-    unsigned bpf_total;
-    unsigned bpf_reset;
-    int bpf_avg;
+    /* bpf = bytes per frame
+     * rf = rate factor (the factor being optimized for) */
+#define DSV_RF_RESET 256 /* # frames after which average RF resets */
+    unsigned rf_total;
+    unsigned rf_reset;
+    int rf_avg;
     int total_P_frame_q;
     int avg_P_frame_q;
     int prev_complexity;
     int curr_complexity;
+    int curr_intra_pct;
 
     DSV_FNUM next_fnum;
     DSV_ENCDATA *ref;
@@ -120,13 +135,14 @@ typedef struct {
     int force_metadata;
 
     struct DSV_STAB_ACC {
-        signed x : 16;
-        signed y : 16;
+        int32_t x;
+        int32_t y;
     } *stability;
     unsigned refresh_ctr;
     uint8_t *blockdata;
 
     DSV_FNUM prev_gop;
+    int prev_quant;
 } DSV_ENCODER;
 
 extern void dsv_enc_init(DSV_ENCODER *enc);
@@ -144,13 +160,15 @@ extern void dsv_enc_end_of_stream(DSV_ENCODER *enc, DSV_BUF *bufs);
 typedef struct {
     DSV_PARAMS *params;
     DSV_FRAME *src[DSV_MAX_PYRAMID_LEVELS + 1];
-    DSV_FRAME *ref[DSV_MAX_PYRAMID_LEVELS + 1];
-    DSV_FRAME *recon;
+    DSV_FRAME *ref[DSV_MAX_PYRAMID_LEVELS + 1]; /* reconstructed reference frame */
+    DSV_FRAME *ogr[DSV_MAX_PYRAMID_LEVELS + 1]; /* original reference frame */
     DSV_MV *mvf[DSV_MAX_PYRAMID_LEVELS + 1];
+    DSV_MV *ref_mvf;
     DSV_ENCODER *enc;
+    int quant;
 } DSV_HME;
 
-extern int dsv_hme(DSV_HME *hme, int *scene_change_blocks);
+extern int dsv_hme(DSV_HME *hme, int *scene_change_blocks, int *avg_err);
 
 #ifdef __cplusplus
 }
