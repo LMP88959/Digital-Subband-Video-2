@@ -229,8 +229,8 @@ dsv_yuv_read(FILE *in, int fno, uint8_t *o, int width, int height, int subsamp)
     }
 
     if (fseek(in, offset, SEEK_SET)) {
-        fpos_t pos;
-        if (fgetpos(in, &pos)) {
+        long int pos = ftell(in);
+        if (pos < 0) {
             return -1;
         }
         if ((pos % (npix + chrsz + chrsz)) == 0) {
@@ -241,11 +241,12 @@ dsv_yuv_read(FILE *in, int fno, uint8_t *o, int width, int height, int subsamp)
 
     nread = fread(o, 1, npix + chrsz + chrsz, in);
     if (nread != (npix + chrsz + chrsz)) {
-        fpos_t pos;
+        long int pos;
         if (nread == 0) {
             return -2;
         }
-        if (fgetpos(in, &pos)) {
+        pos = ftell(in);
+        if (pos < 0) {
             return -1;
         }
         if ((pos % (npix + chrsz + chrsz)) == 0) {
@@ -287,11 +288,12 @@ dsv_yuv_read_seq(FILE *in, uint8_t *o, int width, int height, int subsamp)
     }
     nread = fread(o, 1, npix + chrsz + chrsz, in);
     if (nread != (npix + chrsz + chrsz)) {
-        fpos_t pos;
+        long int pos;
         if (nread == 0) {
             return -2;
         }
-        if (fgetpos(in, &pos)) {
+        pos = ftell(in);
+        if (pos < 0) {
             return -1;
         }
         if ((pos % (npix + chrsz + chrsz)) == 0) {
