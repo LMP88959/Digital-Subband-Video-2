@@ -350,8 +350,8 @@ dsv_y4m_read_seq(FILE *in, uint8_t *o, int w, int h, int subsamp)
             break;
     }
     if (fread(o, 1, npix + chrsz + chrsz, in) != (npix + chrsz + chrsz)) {
-        fpos_t pos;
-        if (fgetpos(in, &pos)) {
+        long int pos = ftell(in);
+        if (pos < 0) {
             return -1;
         }
         if ((pos % (npix + chrsz + chrsz)) == 0) {
