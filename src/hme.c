@@ -815,7 +815,7 @@ test_subblock_intra_y(DSV_PARAMS *params, DSV_MV *mv,
         int bw, int bh)
 {
     int f, g, sbw, sbh, bit_index, nsub = 0, psyscale;
-    unsigned avgs[4], err_sub = 0, err_src = 0;
+    unsigned avgs[4], avg_tot = 0, err_sub = 0, err_src = 0;
     uint8_t bits[4] = {
             DSV_MASK_INTRA00,
             DSV_MASK_INTRA01,
@@ -866,6 +866,7 @@ test_subblock_intra_y(DSV_PARAMS *params, DSV_MV *mv,
                 nsub++;
                 err_src += src_pred_err;
                 err_sub += sub_pred_err;
+                avg_tot += avgs[bit_index];
                 /* lower the threshold for subsequent subblocks since we're already going to be intra-ing the block anyway */
                 detail_src = detail_src * 4 / 5;
             }
@@ -876,7 +877,7 @@ next:
     if (mv->submask) {
         DSV_MV_SET_INTRA(mv, 1);
         if (err_src < err_sub) {
-            mv->dc = avg_src | DSV_SRC_DC_PRED;
+            mv->dc = (avg_tot / nsub) | DSV_SRC_DC_PRED;
         } else {
             mv->dc = 0;
         }
