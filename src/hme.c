@@ -814,7 +814,8 @@ test_subblock_intra_y(DSV_PARAMS *params, DSV_MV *mv,
         int detail_src, int avg_src, int neidif, unsigned ratio,
         int bw, int bh)
 {
-    int f, g, sbw, sbh, bit_index, dc = 0, nsub = 0, psyscale;
+    int f, g, sbw, sbh, bit_index, nsub = 0, psyscale;
+    unsigned avgs[4], err_sub = 0, err_src = 0;
     uint8_t bits[4] = {
             DSV_MASK_INTRA00,
             DSV_MASK_INTRA01,
@@ -833,7 +834,7 @@ test_subblock_intra_y(DSV_PARAMS *params, DSV_MV *mv,
     for (g = 0; g <= sbh; g += sbh) {
         for (f = 0; f <= sbw; f += sbw) {
             uint8_t *src_d, *mvr_d;
-            unsigned avg_sub, local_detail, tmp;
+            unsigned avg_sub, local_detail;
             unsigned sub_pred_err, src_pred_err, intererr;
             int lo, hi, lerp, sub_better, src_better;
 
@@ -846,8 +847,10 @@ test_subblock_intra_y(DSV_PARAMS *params, DSV_MV *mv,
             avg_sub = block_avg(mvr_d, refp->stride, sbw, sbh);
             sse_intra(src_d, srcp->stride, mvr_d, refp->stride, avg_sub, avg_src, sbw, sbh, &sub_pred_err, &src_pred_err, &intererr);
             intererr = intererr * ratio >> 5;
-            local_detail = block_detail(src_d, srcp->stride, sbw, sbh, &tmp);
-
+            local_detail = block_detail(src_d, srcp->stride, sbw, sbh, &avgs[bit_index]);
+            if (local_detail > (unsigned) (3 * bw * bh)) {
+                goto next;
+            }
             lo = (detail_src + local_detail + 1) >> 1;
             hi = detail_src;
             /* scale importance of subblock (local) detail vs whole block detail based on video size */
@@ -861,15 +864,8 @@ test_subblock_intra_y(DSV_PARAMS *params, DSV_MV *mv,
             if (sub_better || src_better) {
                 mv->submask |= bits[bit_index];
                 nsub++;
-                if (src_better && sub_better) {
-                    /* if both were better, bias towards subblock prediction
-                     * since src prediction requires transmitting DC */
-                    if ((src_pred_err + 4 * (bw * bh)) < sub_pred_err) {
-                        dc++;
-                    }
-                } else if (src_better) {
-                    dc++;
-                }
+                err_src += src_pred_err;
+                err_sub += sub_pred_err;
                 /* lower the threshold for subsequent subblocks since we're already going to be intra-ing the block anyway */
                 detail_src = detail_src * 4 / 5;
             }
@@ -879,8 +875,10 @@ next:
     }
     if (mv->submask) {
         DSV_MV_SET_INTRA(mv, 1);
-        if (dc >= nsub) {
+        if (err_src < err_sub) {
             mv->dc = avg_src | DSV_SRC_DC_PRED;
+        } else {
+            mv->dc = 0;
         }
     }
 }
