@@ -344,6 +344,22 @@ The H.264 file sizes were within a few kilobytes of their respective DSV2 file s
 H.264 examples were encoded using https://github.com/lieff/minih264 using -speed0 (best quality)
 DSV2 examples were encoded with -effort=10 (best quality)
 
+
+minih264:
+
+
+https://github.com/user-attachments/assets/2ddb2d57-fe48-4cef-b755-42230393c6e9
+
+
+DSV2:
+
+
+https://github.com/user-attachments/assets/177a5da0-dbf6-43fd-90bc-7f98f5c9822e
+
+
+
+
+
 minih264:
 
 
