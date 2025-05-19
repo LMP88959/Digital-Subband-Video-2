@@ -67,7 +67,7 @@ typedef struct _DSV_ENCDATA {
 } DSV_ENCDATA;
 
 typedef struct {
-    int quality; /* user configurable, 0...DSV_MAX_QUALITY  */
+    int quality;
 
     int effort; /* encoder effort. DSV_MIN_EFFORT...DSV_MAX_EFFORT */
 
@@ -104,9 +104,9 @@ typedef struct {
     int rc_pergop; /* update rate control per GOP instead of per frame */
     int min_q_step;
     int max_q_step;
-    int min_quality; /* 0...DSV_MAX_QUALITY */
-    int max_quality; /* 0...DSV_MAX_QUALITY */
-    int min_I_frame_quality; /* 0...DSV_MAX_QUALITY */
+    int min_quality;
+    int max_quality;
+    int min_I_frame_quality;
     int prev_I_frame_quality;
 
     int intra_pct_thresh; /* 0-100% */

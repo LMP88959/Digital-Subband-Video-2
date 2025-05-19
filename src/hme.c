@@ -1405,7 +1405,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err)
 
                     oob_vector = outofbounds(i, j, nxb, nyb, y_w, y_h, mv);
 
-                    if (hme->enc->skip_block_thresh >= 0) {
+                    if (hme->enc->skip_block_thresh >= 0 && !params->lossless) {
                         unsigned sth = skipt * yarea;
                         unsigned zerr[3], zsub[3][4];
                         unsigned mag, ysub;
@@ -1427,7 +1427,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err)
                     }
                     neidif = dsv_neighbordif(mf, params, i, j);
 
-                    if (!oob_vector) {
+                    if (!oob_vector && !params->lossless) {
                         int y_prereq, c_prereq;
                         y_prereq = (avg_y_dif <= 2);
                         c_prereq = (avg_c_dif <= 2);
@@ -1504,6 +1504,7 @@ skip:
                         }
                         DSV_MV_SET_EPRM(mv, !!merged);
                     }
+
                     if (DSV_MV_IS_INTRA(mv) || DSV_MV_IS_EPRM(mv)) {
                         DSV_MV_SET_SIMCMPLX(mv, 0); /* don't do this for intra/eprm to retain precision */
                     }

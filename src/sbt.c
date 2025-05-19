@@ -413,6 +413,24 @@ ifilterL1(DSV_SBC *out, DSV_SBC *in, int n, int s)
     DO_SIMPLE_INV(out, s);
 }
 
+static void
+filterLOSSLESS(DSV_SBC *out, DSV_SBC *in, int n, int s)
+{
+    int i, even_n = n & ~1, h = n + (n & 1);
+    DO_SIMPLE_HI(in, -=, s);
+    DO_SIMPLE_LO(in, +=, s);
+    SCALE_PACK(FWD_SCALENONE, FWD_SCALENONE, s);
+}
+
+static void
+ifilterLOSSLESS(DSV_SBC *out, DSV_SBC *in, int n, int s)
+{
+    int i, even_n = n & ~1, h = n + (n & 1);
+    UNSCALE_UNPACK(INV_SCALENONE, INV_SCALENONE, s);
+    DO_SIMPLE_LO(out, -=, s);
+    DO_SIMPLE_HI(out, +=, s);
+}
+
 #define fwd_2d(tmp, in, fw, fh, lvl, filter) \
 { \
     int i, j, sw, sh; \
@@ -804,6 +822,14 @@ dsv_fwd_sbt(DSV_PLANE *src, DSV_COEFS *dst, DSV_FMETA *fm)
     temp_buf_pad = temp_buf + w;
 
     for (l = 1; l <= lvls; l++) {
+        if (fm->params->lossless) {
+            if ((l >= 1 && l <= (lvls - 2))) {
+                fwd_2d(temp_buf_pad, dst->data, w, h, l, filterLOSSLESS);
+            } else {
+                fwd(dst->data, temp_buf_pad, w, h, l);
+            }
+            continue;
+        }
         if (LLI_CONDITION) {
             fwd_2d(temp_buf_pad, dst->data, w, h, l, filterLLI);
         } else if (LLP_CONDITION) {
@@ -836,6 +862,14 @@ dsv_inv_sbt(DSV_PLANE *dst, DSV_COEFS *src, int q, DSV_FMETA *fm)
 
     hqp = (fm->cur_plane == 0) ? (q / (fm->isP ? 14 : 8)) : (q / 2);
     for (l = lvls; l > 0; l--) {
+        if (fm->params->lossless) {
+            if ((l >= 1 && l <= (lvls - 2))) {
+                inv_2d(temp_buf_pad, src->data, w, h, l, ifilterLOSSLESS);
+            } else {
+                inv_simple(src->data, temp_buf_pad, w, h, l);
+            }
+            continue;
+        }
         if (LLI_CONDITION) {
             inv_2d(temp_buf_pad, src->data, w, h, l, ifilterLLI);
         } else if (LLP_CONDITION) {

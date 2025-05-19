@@ -377,7 +377,9 @@ dsv_intra_filter(int q, DSV_PARAMS *p, DSV_FMETA *fm, int c, DSV_PLANE *dp, int 
     int i, j, x, y;
     int nsbx, nsby;
     int fthresh;
-
+    if (p->lossless) {
+        return;
+    }
     if (c != 0) {
         return;
     }
@@ -453,7 +455,9 @@ luma_filter(DSV_MV *vecs, int q, DSV_PARAMS *p, DSV_PLANE *dp, int do_filter)
     } else {
         sharpen = 0;
     }
-
+    if (p->lossless) {
+        return;
+    }
     nsbx = dp->w / FILTER_DIM;
     nsby = dp->h / FILTER_DIM;
     q = compute_filter_q(p, q);
@@ -554,7 +558,9 @@ chroma_filter(DSV_MV *vecs, int q, DSV_PARAMS *p, DSV_PLANE *dp)
 
     bw = p->blk_w >> sh;
     bh = p->blk_h >> sv;
-
+    if (p->lossless) {
+        return;
+    }
     intra_thresh = ((64 * q) >> DSV_MAX_QP_BITS);
     intra_thresh = CLAMP(intra_thresh, 2, 32);
 
@@ -882,27 +888,36 @@ reconstruct(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_PLANE *resp, DSV_PLANE *pred
             res = DSV_GET_XY(resp, x, y);
             pred = DSV_GET_XY(predp, x, y);
             out = DSV_GET_XY(outp, x, y);
-
-            /* D.4 Reconstruction */
-            if (!DSV_MV_IS_EPRM(mv) || (!DSV_MV_IS_INTRA(mv) && DSV_MV_IS_SKIP(mv))) {
+            if (p->lossless) {
                 for (n = 0; n < bh; n++) {
                     for (m = 0; m < bw; m++) {
-                        /* source = (prediction + residual) */
-                        out[m] = clamp_u8(pred[m] + res[m] - 128);
+                        out[m] = (pred[m] + res[m] - 128);
                     }
                     pred += predp->stride;
                     res += resp->stride;
                     out += outp->stride;
                 }
             } else {
-
-                for (n = 0; n < bh; n++) {
-                    for (m = 0; m < bw; m++) {
-                        out[m] = clamp_u8(pred[m] + (res[m] - 128) * 2);
+                /* D.4 Reconstruction */
+                if (!DSV_MV_IS_EPRM(mv) || (!DSV_MV_IS_INTRA(mv) && DSV_MV_IS_SKIP(mv))) {
+                    for (n = 0; n < bh; n++) {
+                        for (m = 0; m < bw; m++) {
+                            /* source = (prediction + residual) */
+                            out[m] = clamp_u8(pred[m] + res[m] - 128);
+                        }
+                        pred += predp->stride;
+                        res += resp->stride;
+                        out += outp->stride;
                     }
-                    pred += predp->stride;
-                    res += resp->stride;
-                    out += outp->stride;
+                } else {
+                    for (n = 0; n < bh; n++) {
+                        for (m = 0; m < bw; m++) {
+                            out[m] = clamp_u8(pred[m] + (res[m] - 128) * 2);
+                        }
+                        pred += predp->stride;
+                        res += resp->stride;
+                        out += outp->stride;
+                    }
                 }
             }
         }
@@ -935,30 +950,41 @@ subtract(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_PLANE *resp, DSV_PLANE *predp)
             mv = &vecs[i + j * p->nblocks_h];
 
             res = DSV_GET_XY(resp, x, y);
-            if (!DSV_MV_IS_INTRA(mv) && (DSV_MV_IS_SKIP(mv) ||
-                    ((c == 0 && DSV_MV_IS_NOXMITY(mv)) ||
-                     (c != 0 && DSV_MV_IS_NOXMITC(mv))))) {
+            if (p->lossless) {
+                uint8_t *pred = DSV_GET_XY(predp, x, y);
                 for (n = 0; n < bh; n++) {
-                    memset(res, 128, bw);
+                    for (m = 0; m < bw; m++) {
+                        res[m] = (res[m] - pred[m] + 128);
+                    }
                     res += resp->stride;
+                    pred += predp->stride;
                 }
             } else {
-                uint8_t *pred = DSV_GET_XY(predp, x, y);
-                if (DSV_MV_IS_EPRM(mv)) {
+                if (!DSV_MV_IS_INTRA(mv) && (DSV_MV_IS_SKIP(mv) ||
+                        ((c == 0 && DSV_MV_IS_NOXMITY(mv)) ||
+                         (c != 0 && DSV_MV_IS_NOXMITC(mv))))) {
                     for (n = 0; n < bh; n++) {
-                        for (m = 0; m < bw; m++) {
-                            res[m] = clamp_u8((res[m] - pred[m]) / 2 + 128);
-                        }
+                        memset(res, 128, bw);
                         res += resp->stride;
-                        pred += predp->stride;
                     }
                 } else {
-                    for (n = 0; n < bh; n++) {
-                        for (m = 0; m < bw; m++) {
-                            res[m] = clamp_u8(res[m] - pred[m] + 128);
+                    uint8_t *pred = DSV_GET_XY(predp, x, y);
+                    if (DSV_MV_IS_EPRM(mv)) {
+                        for (n = 0; n < bh; n++) {
+                            for (m = 0; m < bw; m++) {
+                                res[m] = clamp_u8((res[m] - pred[m] + 256) >> 1);
+                            }
+                            res += resp->stride;
+                            pred += predp->stride;
                         }
-                        res += resp->stride;
-                        pred += predp->stride;
+                    } else {
+                        for (n = 0; n < bh; n++) {
+                            for (m = 0; m < bw; m++) {
+                                res[m] = clamp_u8(res[m] - pred[m] + 128);
+                            }
+                            res += resp->stride;
+                            pred += predp->stride;
+                        }
                     }
                 }
             }

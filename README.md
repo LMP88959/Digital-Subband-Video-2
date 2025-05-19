@@ -1,7 +1,7 @@
 # Digital-Subband-Video-2
 ------
 
-DSV2 is a lossy video codec using wavelets and block-based motion compensation.
+DSV2 is a lossy/lossless video codec using wavelets and block-based motion compensation.
 It is designed for medium-low to medium-high bitrates.
 Comparable to MPEG-4 Part 2 and Part 10 (H.264) (P frames only) in terms of efficiency and quality.
 

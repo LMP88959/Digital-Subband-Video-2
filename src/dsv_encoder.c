@@ -405,6 +405,9 @@ quality2quant(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_FNUM prev_I)
         enc->rc_qual = q;
     }
     d->quant = qual_to_qp(q);
+    if (d->params.lossless) {
+        d->quant = 1;
+    }
     enc->prev_quant = d->quant;
 
     DSV_INFO(("frame quant = %d from quality (%d/%d)%%", d->quant, q, DSV_RC_QUAL_SCALE));
@@ -1019,7 +1022,8 @@ encode_one_frame(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_BUF *output_buf)
     p->do_psy = enc->do_psy;
     prev_I = enc->prev_gop;
     p->temporal_mc = DSV_TEMPORAL_MC(d->fnum);
-
+    p->lossless = (enc->quality == DSV_RC_QUAL_MAX);
+    
     w = p->vidmeta->width;
     h = p->vidmeta->height;
 
