@@ -557,6 +557,7 @@ encode(void)
     int nfr;
     int y4m_in = 0;
     int write_eos = 1;
+    int no_more_data = 0;
 
     if (verbose) {
         printf(DRV_HEADER);
@@ -745,6 +746,7 @@ encode(void)
             if (frame_read == -1) {
                 DSV_ERROR(("failed to read frame %d", frno));
             }
+            no_more_data = 1;
             goto end_of_stream;
         }
         frame = dsv_load_planar_frame(md.subsamp, picture, w, h);
@@ -807,7 +809,7 @@ end_of_stream:
     if (opts.inp[0] != USE_STDIO_CHAR) {
         fclose(inpfile);
     }
-    return EXIT_SUCCESS;
+    return no_more_data ? -2 : EXIT_SUCCESS;
 }
 
 #define DSV_PKT_ERR_EOF -1
