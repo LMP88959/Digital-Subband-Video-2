@@ -247,6 +247,7 @@ typedef struct {
     int nblocks_v;
 
     int temporal_mc; /* temporal motion compensation state */
+    int lossless;
 } DSV_PARAMS;
 
 typedef struct {
