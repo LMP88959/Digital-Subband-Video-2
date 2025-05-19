@@ -36,6 +36,7 @@ https://github.com/user-attachments/assets/ac400dd8-dc3e-4749-9503-9da1319ab870
 - 4:1:0, 4:1:1, 4:2:0, 4:2:2 (+ UYVY) and 4:4:4 chroma subsampling formats
 - adaptive quantization
 - in-loop filtering
+- lossless coding support
 - intra and inter frames with variable length closed GOP
    - no bidirectional prediction (also known as B-frames). Only forward prediction with previous picture as reference
 - only form of entropy coding is interleaved exponential-golomb coding for simplicity
@@ -48,6 +49,7 @@ https://github.com/user-attachments/assets/ac400dd8-dc3e-4749-9503-9da1319ab870
 - new subband filters + support for adaptive subband filtering
 - better motion compensation through Expanded Prediction Range Mode (EPRM)
 - quarter pixel compensation
+- lossless coding support
 - psychovisual optimizations in the codec and encoder design
 
 
@@ -127,7 +129,7 @@ Envel Graphics DSV v2.7 codec by EMMIR 2024-2025. encoder v10. decoder v2.
 usage: ./dsv2 e [options]
 sample usage: ./dsv2 e -inp=video.yuv -out=compressed.dsv -w=352 -h=288 -fps_num=24 -fps_den=1 -qp=85 -gop=15
 ------------------------------------------------------------
-	-qp : quality percent. If -1 and ABR mode, it will auto-estimate a good starting qp for desired bitrate. If -1 and CRF mode, default to 85. -1 = default
+	-qp : quality percent. 100 = mathematically lossless mode. If -1 and ABR mode, it will auto-estimate a good starting qp for desired bitrate. If -1 and CRF mode, default to 85. -1 = default
 	      [min = -1, max = 100]
 	extra info: if ABR mode, the qp specified here will be the starting qp which will influence the quality of the beginning of your encoded video
 
