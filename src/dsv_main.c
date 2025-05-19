@@ -776,7 +776,7 @@ encode(void)
         frno++;
         continue;
 end_of_stream:
-        if (write_eos) {
+        if (write_eos || (!write_eos && no_more_data)) {
             dsv_enc_end_of_stream(&enc, bufs);
             savebuffer(&bufs[0]);
             dsv_buf_free(&bufs[0]);
