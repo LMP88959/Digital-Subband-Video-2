@@ -107,7 +107,7 @@ struct PARAM {
 
 static struct PARAM enc_params[] = {
     { "qp", DSV_USER_QUAL_TO_RC_QUAL(-1), -1, 100, pct_to_qual,
-            "quality percent. If -1 and ABR mode, it will auto-estimate a good starting qp for desired bitrate. If -1 and CRF mode, default to 85. -1 = default",
+            "quality percent. 100 = mathematically lossless mode. If -1 and ABR mode, it will auto-estimate a good starting qp for desired bitrate. If -1 and CRF mode, default to 85. -1 = default",
             "if ABR mode, the qp specified here will be the starting qp which will influence the quality of the beginning of your encoded video"},
     { "effort", DSV_MAX_EFFORT, DSV_MIN_EFFORT, DSV_MAX_EFFORT, NULL,
             "encoder effort. 0 = least effort, 10 = most effort. higher value -> better video, slower encoding. default = 10",
