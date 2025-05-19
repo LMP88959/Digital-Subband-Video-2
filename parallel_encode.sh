@@ -40,7 +40,7 @@ mp_encode_sub() {
         ((start=start+chunk))
         $cmd &
     done
-	# wait for jobs to end, collect their statuses
+    # wait for jobs to end, collect their statuses
     for job in `jobs -p`; do
         wait "$job"
         status=$?
@@ -62,12 +62,12 @@ mp_encode() {
     do
         hit_end=0 # clear, gets set in mp_encode_sub
         ((id++))
-		echo "encoding group ${id}"
+        echo "encoding group ${id}"
         mp_encode_sub $id
         catstring="${catstring} saved${id}.dsv"
        # echo $hit_end
         if [[ $hit_end -ne 0 ]]; then
-			echo "potentially hit the end of the stream, exiting"
+            echo "potentially hit the end of the stream, exiting"
             break
         fi
     done
