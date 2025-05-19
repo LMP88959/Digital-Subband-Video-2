@@ -268,96 +268,137 @@ hzcc_enc(DSV_BS *bs, DSV_SBC *src, int w, int h, int q, DSV_FMETA *fm)
     src[0] = 0;
     srcp = src + o;
 
-    /* C.2.3 LL Subband */
-    for (y = 0; y < sh; y++) {
-        for (x = 0; x < sw; x++) {
-            v = quantS(srcp[x], qp);
-            if (v) {
-                srcp[x] = dequantL(v, qp);
-                dsv_bs_put_ueg(bs, run);
-                dsv_bs_put_neg(bs, v);
-                run = -1;
-                nruns++;
-            } else {
-                srcp[x] = 0;
+    if (fm->params->lossless) {
+        for (y = 0; y < sh; y++) {
+            for (x = 0; x < sw; x++) {
+                v = srcp[x];
+                if (v) {
+                    dsv_bs_put_ueg(bs, run);
+                    dsv_bs_put_neg(bs, v);
+                    run = -1;
+                    nruns++;
+                }
+                run++;
             }
-            run++;
+            srcp += w;
         }
-        srcp += w;
-    }
+        for (l = 0; l < MAXLVL; l++) {
+            sw = dimat(l, w);
+            sh = dimat(l, h);
+            /* C.2.4 Higher Level Subbands */
+            for (s = 1; s < NSUBBAND; s++) {
+                o = subband(l, s, w, h);
 
-    for (l = 0; l < MAXLVL; l++) {
-        uint8_t *blockrow;
-        DSV_SBC *parent;
-        int psyluma;
-
-        sw = dimat(l, w);
-        sh = dimat(l, h);
-        dbx = (fm->params->nblocks_h << DSV_BLOCK_INTERP_P) / sw;
-        dby = (fm->params->nblocks_v << DSV_BLOCK_INTERP_P) / sh;
-        qp = q;
-        psyluma = (fm->params->do_psy & (isP ? DSV_PSY_P_VISUAL_MASKING : DSV_PSY_I_VISUAL_MASKING))
-                && !fm->cur_plane && (l != (MAXLVL - 3));
-        /* C.2.4 Higher Level Subbands */
-        for (s = 1; s < NSUBBAND; s++) {
-            int par;
-            par = subband(l - 1, s, w, h);
-            o = subband(l, s, w, h);
-            qp = hfquant(fm, q, s, l);
-
-            srcp = src + o;
-            by = 0;
-            for (y = 0; y < sh; y++) {
-                bx = 0;
-                blockrow = fm->blockdata + (by >> DSV_BLOCK_INTERP_P) * fm->params->nblocks_h;
-                parent = src + par + ((y >> 1) * w);
-                for (x = 0; x < sw; x++) {
-                    int tmq = qp;
-                    int flags = blockrow[bx >> DSV_BLOCK_INTERP_P];
-                    if (isP) {
-                        TMQ4POS_P(tmq, flags);
-                        if (psyluma && (flags & DSV_IS_SIMCMPLX)) {
-                            v = quantSUB(srcp[x], tmq, tmq >> 2);
+                srcp = src + o;
+                for (y = 0; y < sh; y++) {
+                    for (x = 0; x < sw; x++) {
+                        v = srcp[x];
+                        if (v) {
+                            dsv_bs_put_ueg(bs, run);
+                            dsv_bs_put_neg(bs, v);
+                            run = -1;
+                            nruns++;
                         } else {
-                            v = quantS(srcp[x], tmq);
+                            srcp[x] = 0;
                         }
-                    } else {
-                        TMQ4POS_I(tmq, flags, l);
-                        /* psychovisual: visual masking */
-                        if (psyluma && !(flags & DSV_IS_STABLE)) {
-                            v = 0;
-                            if (srcp[x]) {
-                                int parc = parent[x >> 1];
-                                if (parc) {
-                                    int absrc, tm;
+                        run++;
+                    }
+                    srcp += w;
+                }
+            }
+        }
+    } else {
+        /* C.2.3 LL Subband */
+        for (y = 0; y < sh; y++) {
+            for (x = 0; x < sw; x++) {
+                v = quantS(srcp[x], qp);
+                if (v) {
+                    srcp[x] = dequantL(v, qp);
+                    dsv_bs_put_ueg(bs, run);
+                    dsv_bs_put_neg(bs, v);
+                    run = -1;
+                    nruns++;
+                } else {
+                    srcp[x] = 0;
+                }
+                run++;
+            }
+            srcp += w;
+        }
 
-                                    absrc = abs(srcp[x]);
-                                    tm = (q * abs(parc) / absrc) >> (7 - l);
-                                    if (tm < tmq && tm < absrc) {
-                                        v = quantSUB(srcp[x], tmq, tm);
-                                    }
-                                } else {
-                                    v = quantRI(srcp[x], tmq);
-                                }
+        for (l = 0; l < MAXLVL; l++) {
+            uint8_t *blockrow;
+            DSV_SBC *parent;
+            int psyluma;
+
+            sw = dimat(l, w);
+            sh = dimat(l, h);
+            dbx = (fm->params->nblocks_h << DSV_BLOCK_INTERP_P) / sw;
+            dby = (fm->params->nblocks_v << DSV_BLOCK_INTERP_P) / sh;
+            qp = q;
+            psyluma = (fm->params->do_psy & (isP ? DSV_PSY_P_VISUAL_MASKING : DSV_PSY_I_VISUAL_MASKING))
+                        && !fm->cur_plane && (l != (MAXLVL - 3));
+            /* C.2.4 Higher Level Subbands */
+            for (s = 1; s < NSUBBAND; s++) {
+                int par;
+                par = subband(l - 1, s, w, h);
+                o = subband(l, s, w, h);
+                qp = hfquant(fm, q, s, l);
+
+                srcp = src + o;
+                by = 0;
+                for (y = 0; y < sh; y++) {
+                    bx = 0;
+                    blockrow = fm->blockdata + (by >> DSV_BLOCK_INTERP_P) * fm->params->nblocks_h;
+                    parent = src + par + ((y >> 1) * w);
+                    for (x = 0; x < sw; x++) {
+                        int tmq = qp;
+                        int flags = blockrow[bx >> DSV_BLOCK_INTERP_P];
+                        if (isP) {
+                            TMQ4POS_P(tmq, flags);
+                            if (psyluma && (flags & DSV_IS_SIMCMPLX)) {
+                                v = quantSUB(srcp[x], tmq, tmq >> 2);
+                            } else {
+                                v = quantS(srcp[x], tmq);
                             }
                         } else {
-                            v = quantS(srcp[x], tmq);
+                            TMQ4POS_I(tmq, flags, l);
+                            /* psychovisual: visual masking */
+                            if (psyluma && !(flags & DSV_IS_STABLE)) {
+                                v = 0;
+                                if (srcp[x]) {
+                                    int parc = parent[x >> 1];
+                                    if (parc) {
+                                        int absrc, tm;
+
+                                        absrc = abs(srcp[x]);
+                                        tm = (q * abs(parc) / absrc) >> (7 - l);
+                                        if (tm < tmq && tm < absrc) {
+                                            v = quantSUB(srcp[x], tmq, tm);
+                                        }
+                                    } else {
+                                        v = quantRI(srcp[x], tmq);
+                                    }
+                                }
+                            } else {
+                                v = quantS(srcp[x], tmq);
+                            }
                         }
+                        if (v) {
+                            srcp[x] = dequantH(v, tmq);
+                            dsv_bs_put_ueg(bs, run);
+                            dsv_bs_put_neg(bs, v);
+                            run = -1;
+                            nruns++;
+                        } else {
+                            srcp[x] = 0;
+                        }
+                        run++;
+                        bx += dbx;
                     }
-                    if (v) {
-                        srcp[x] = dequantH(v, tmq);
-                        dsv_bs_put_ueg(bs, run);
-                        dsv_bs_put_neg(bs, v);
-                        run = -1;
-                        nruns++;
-                    } else {
-                        srcp[x] = 0;
-                    }
-                    run++;
-                    bx += dbx;
+                    srcp += w;
+                    by += dby;
                 }
-                srcp += w;
-                by += dby;
             }
         }
     }
@@ -402,59 +443,97 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
 
     run = (runs-- > 0) ? dsv_bs_get_ueg(bs) : INT_MAX;
 
-    /* C.2.3 LL Subband */
-    for (y = 0; y < sh; y++) {
-        for (x = 0; x < sw; x++) {
-            if (!run--) {
-                v = dsv_bs_get_neg(bs);
-                run = (runs-- > 0) ? dsv_bs_get_ueg(bs) : INT_MAX;
-                if (dsv_bs_ptr(bs) >= bufsz) {
-                    return;
+    if (fm->params->lossless) {
+        /* C.2.3 LL Subband */
+        for (y = 0; y < sh; y++) {
+            for (x = 0; x < sw; x++) {
+                if (!run--) {
+                    v = dsv_bs_get_neg(bs);
+                    run = (runs-- > 0) ? dsv_bs_get_ueg(bs) : INT_MAX;
+                    if (dsv_bs_ptr(bs) >= bufsz) {
+                        return;
+                    }
+                    outp[x] = v;
                 }
-                outp[x] = dequantL(v, qp);
+            }
+            outp += w;
+        }
+        for (l = 0; l < MAXLVL; l++) {
+            sw = dimat(l, w);
+            sh = dimat(l, h);
+            /* C.2.4 Higher Level Subband Dequantization */
+            for (s = 1; s < NSUBBAND; s++) {
+                o = subband(l, s, w, h);
+                outp = out + o;
+                for (y = 0; y < sh; y++) {
+                    for (x = 0; x < sw; x++) {
+                        if (!run--) {
+                            v = dsv_bs_get_neg(bs);
+                            run = (runs-- > 0) ? dsv_bs_get_ueg(bs) : INT_MAX;
+                            if (dsv_bs_ptr(bs) >= bufsz) {
+                                return;
+                            }
+                            outp[x] = v;
+                        }
+                    }
+                    outp += w;
+                }
             }
         }
-        outp += w;
-    }
-
-    for (l = 0; l < MAXLVL; l++) {
-        uint8_t *blockrow;
-
-        sw = dimat(l, w);
-        sh = dimat(l, h);
-        dbx = (fm->params->nblocks_h << DSV_BLOCK_INTERP_P) / sw;
-        dby = (fm->params->nblocks_v << DSV_BLOCK_INTERP_P) / sh;
-        qp = q;
-        /* C.2.4 Higher Level Subband Dequantization */
-        for (s = 1; s < NSUBBAND; s++) {
-            o = subband(l, s, w, h);
-            qp = hfquant(fm, q, s, l);
-
-            outp = out + o;
-            by = 0;
-            for (y = 0; y < sh; y++) {
-                bx = 0;
-                blockrow = fm->blockdata + (by >> DSV_BLOCK_INTERP_P) * fm->params->nblocks_h;
-                for (x = 0; x < sw; x++) {
-                    if (!run--) {
-                        int tmq = qp;
-                        int flags = blockrow[bx >> DSV_BLOCK_INTERP_P];
-                        v = dsv_bs_get_neg(bs);
-                        run = (runs-- > 0) ? dsv_bs_get_ueg(bs) : INT_MAX;
-                        if (dsv_bs_ptr(bs) >= bufsz) {
-                            return;
-                        }
-                        if (isP) {
-                            TMQ4POS_P(tmq, flags);
-                        } else {
-                            TMQ4POS_I(tmq, flags, l);
-                        }
-                        outp[x] = dequantH(v, tmq);
+    } else {
+        /* C.2.3 LL Subband */
+        for (y = 0; y < sh; y++) {
+            for (x = 0; x < sw; x++) {
+                if (!run--) {
+                    v = dsv_bs_get_neg(bs);
+                    run = (runs-- > 0) ? dsv_bs_get_ueg(bs) : INT_MAX;
+                    if (dsv_bs_ptr(bs) >= bufsz) {
+                        return;
                     }
-                    bx += dbx;
+                    outp[x] = dequantL(v, qp);
                 }
-                outp += w;
-                by += dby;
+            }
+            outp += w;
+        }
+        for (l = 0; l < MAXLVL; l++) {
+            uint8_t *blockrow;
+
+            sw = dimat(l, w);
+            sh = dimat(l, h);
+            dbx = (fm->params->nblocks_h << DSV_BLOCK_INTERP_P) / sw;
+            dby = (fm->params->nblocks_v << DSV_BLOCK_INTERP_P) / sh;
+            qp = q;
+            /* C.2.4 Higher Level Subband Dequantization */
+            for (s = 1; s < NSUBBAND; s++) {
+                o = subband(l, s, w, h);
+                qp = hfquant(fm, q, s, l);
+
+                outp = out + o;
+                by = 0;
+                for (y = 0; y < sh; y++) {
+                    bx = 0;
+                    blockrow = fm->blockdata + (by >> DSV_BLOCK_INTERP_P) * fm->params->nblocks_h;
+                    for (x = 0; x < sw; x++) {
+                        if (!run--) {
+                            int tmq = qp;
+                            int flags = blockrow[bx >> DSV_BLOCK_INTERP_P];
+                            v = dsv_bs_get_neg(bs);
+                            run = (runs-- > 0) ? dsv_bs_get_ueg(bs) : INT_MAX;
+                            if (dsv_bs_ptr(bs) >= bufsz) {
+                                return;
+                            }
+                            if (isP) {
+                                TMQ4POS_P(tmq, flags);
+                            } else {
+                                TMQ4POS_I(tmq, flags, l);
+                            }
+                            outp[x] = dequantH(v, tmq);
+                        }
+                        bx += dbx;
+                    }
+                    outp += w;
+                    by += dby;
+                }
             }
         }
     }
