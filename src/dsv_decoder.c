@@ -480,6 +480,7 @@ dsv_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
     }
     do_filter = dsv_bs_get_bit(&bs);
     quant = dsv_bs_get_bits(&bs, DSV_MAX_QP_BITS);
+    p->lossless = (quant == 1);
     /* read frame metadata (stability / skip, motion data / adaptive quant) */
     dsv_bs_align(&bs);
     img->blockdata = dsv_alloc(p->nblocks_h * p->nblocks_v);
