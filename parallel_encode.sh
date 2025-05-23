@@ -18,7 +18,6 @@ encode_args="-w=$vwidth -h=$vheight -fps_num=$framerate_num -fps_den=$framerate_
 let chunk=30 # default frame chunk size if chunk_per_gop is "0"
 if [[ $chunk_per_gop -ne 0 ]]; then
     chunk=$gop
-    encode_args="$encode_args -varint=0"
 fi
 
 start=0 # start frame number
