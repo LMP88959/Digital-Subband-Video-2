@@ -831,6 +831,11 @@ test_subblock_intra_y(DSV_PARAMS *params, DSV_MV *refmv, DSV_MV *mv,
     if (sbw == 0 || sbh == 0 || (refmv->u.all == 0 && mv->u.all == 0)) {
         return;
     }
+
+    if (MV_LT(mv, 4) && ratio <= 26 && neidif < 6) {
+        return;
+    }
+
     psyscale = dsv_spatial_psy_factor(params, -1);
     bit_index = 0;
     /* increase detail bias proportionally to how similar the MV was to its neighbors */
@@ -851,10 +856,6 @@ test_subblock_intra_y(DSV_PARAMS *params, DSV_MV *refmv, DSV_MV *mv,
             avg_sub = block_avg(mvr_d, refp->stride, sbw, sbh);
             sse_intra(src_d, srcp->stride, mvr_d, refp->stride, avg_sub, avg_src, sbw, sbh, &sub_pred_err, &src_pred_err, &intererr);
             intererr = intererr * ratio >> 5;
-
-            if (MV_LT(mv, 4) && ratio <= 24) {
-                goto next;
-            }
 
             local_detail = block_detail(src_d, srcp->stride, sbw, sbh, &avgs[bit_index]);
             if (local_detail > (unsigned) (3 * bw * bh)) {
