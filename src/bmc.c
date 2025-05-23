@@ -345,6 +345,7 @@ dsv_post_process(DSV_PLANE *dp)
     }
 }
 
+/* non-linearize texture */
 static int
 curve_tex(int tt)
 {
@@ -446,8 +447,8 @@ luma_filter(DSV_MV *vecs, int q, DSV_PARAMS *p, DSV_PLANE *dp, int do_filter)
     int nsbx, nsby;
     int sharpen;
 #define NDCACHE_INVALID -1
-    /* x, y, neighbordif */
-    int cached[3] = { NDCACHE_INVALID, NDCACHE_INVALID, NDCACHE_INVALID };
+    /* x, y, neighbordif_x, neighbordif_y */
+    int cached[4] = { NDCACHE_INVALID, NDCACHE_INVALID, NDCACHE_INVALID, NDCACHE_INVALID };
     int fthresh;
 
     if (p->vidmeta->inter_sharpen) {
@@ -472,7 +473,7 @@ luma_filter(DSV_MV *vecs, int q, DSV_PARAMS *p, DSV_PLANE *dp, int do_filter)
             continue;
         }
         for (i = 0; i < nsbx; i++) {
-            int edgeh, fx, nd;
+            int edgeh, fx, ndx, ndy, amx, amy;
             DSV_MV *mv;
             uint8_t *dxy;
 
@@ -488,58 +489,48 @@ luma_filter(DSV_MV *vecs, int q, DSV_PARAMS *p, DSV_PLANE *dp, int do_filter)
             if ((x + FILTER_DIM) >= dp->w) {
                 continue;
             }
-            if (DSV_MV_IS_INTRA(mv)) {
-                int intra_thresh = ((32 * q) >> DSV_MAX_QP_BITS);
-                intra_thresh = CLAMP(intra_thresh, 2, 32);
-
-                ihfilter4x4(dp, x, y, edgeh, intra_thresh * 2, intra_thresh);
-                ivfilter4x4(dp, x, y, edgev, intra_thresh * 2, intra_thresh);
-                continue;
-            }
             /* if current x,y is different than what was cached, update cache */
-            if (do_filter && (fx != cached[0] || fy != cached[1] || cached[2] == NDCACHE_INVALID)) {
-                nd = dsv_neighbordif(vecs, p, fx, fy);
+            if (do_filter && (fx != cached[0] || fy != cached[1] || cached[2] == NDCACHE_INVALID || cached[3] == NDCACHE_INVALID)) {
+                dsv_neighbordif2(vecs, p, fx, fy, &ndx, &ndy);
                 cached[0] = fx;
                 cached[1] = fy;
-                cached[2] = nd;
+                cached[2] = ndx;
+                cached[3] = ndy;
             } else {
                 /* use cached value */
-                nd = cached[2];
+                ndx = cached[2];
+                ndy = cached[3];
             }
 
             dxy = DSV_GET_XY(dp, x, y);
 
-            if (do_filter && nd) {
-                int tt, sh, sv;
-                texf4x4(dxy, dp->stride, &sh, &sv);
-                /* non-linearize texture */
-                tt = curve_tex((sh + sv + 1) >> 1);
+            amx = abs(mv->u.mv.x);
+            amy = abs(mv->u.mv.y);
 
-                /* filter strength scaled proportionally
-                 * with the motion block vector's neighbor difference
-                 */
-                if (edgeh || edgev) {
-                    /* 4x4 block edges that coincide with motion block edges
-                     * should have the 4x4 block's texture influence the strength
-                     * because the texture is likely to have come from poor
-                     * motion compensation
-                     */
-                    tt = nd * tt >> 2;
-                } else {
-                    tt = nd * 4;
-                }
+            if (do_filter && (ndx || ndy)) {
+                int tt, sh, sv;
+                int tedgeh = edgeh || DSV_MV_IS_INTRA(mv);
+                int tedgev = edgev || DSV_MV_IS_INTRA(mv);
+
+                texf4x4(dxy, dp->stride, &sh, &sv);
+                /* scale neighbordif vector by absolute value of motion vector.
+                 * shifting right by 4 to bias against blurring in low motion */
+                ndx = ndx * amx >> 4;
+                ndy = ndy * amy >> 4;
+                /* scale new neighbordif vector by the horizontal/vertical texture */
+                tt = (ndx * curve_tex(sh) + ndy * curve_tex(sv) + 4) >> 3;
                 tt = (CLAMP(tt, 0, fthresh) * q) >> DSV_MAX_QP_BITS;
                 if (sh > 2 * sv) {
-                    ivfilter4x4(dp, x, y, edgev, tt * 2, tt);
+                    ivfilter4x4(dp, x, y, tedgev, tt, tt * 3 / 4);
                 } else if (sv > 2 * sh) {
-                    ihfilter4x4(dp, x, y, edgeh, tt * 2, tt);
+                    ihfilter4x4(dp, x, y, tedgeh, tt, tt * 3 / 4);
                 } else {
-                    ihfilter4x4(dp, x, y, 0, tt, tt);
-                    ivfilter4x4(dp, x, y, 0, tt, tt);
+                    ihfilter4x4(dp, x, y, tedgeh, tt, tt / 2);
+                    ivfilter4x4(dp, x, y, tedgev, tt, tt / 2);
                 }
             }
 
-            if (sharpen && DSV_IS_DIAG(mv) && DSV_IS_QPEL(mv) && abs(mv->u.mv.x) < 8 && abs(mv->u.mv.y) < 8) {
+            if (sharpen && DSV_IS_DIAG(mv) && DSV_IS_QPEL(mv) && amx < 8 && amy < 8) {
                 degrad4x4(dxy, dp->stride);
             }
         }
@@ -574,7 +565,7 @@ chroma_filter(DSV_MV *vecs, int q, DSV_PARAMS *p, DSV_PLANE *dp)
                 int z, t = intra_thresh;
                 if (!DSV_MV_IS_INTRA(mv)) {
                     t = (dsv_neighbordif(vecs, p, i, j) * q) >> DSV_MAX_QP_BITS;
-                    t = 4 + (t + 1) * (t + 2);
+                    t = 4 + t * t;
                     t = MIN(64, t);
                 }
                 /* only filtering top and left sides */
