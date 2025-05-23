@@ -28,6 +28,7 @@
 #define AVG4(a, b, c, d) (((a) + (b) + (c) + (d) + 2) >> 2)
 #define UAVG4(a, b, c, d) ((unsigned) ((a) + (b) + (c) + (d) + 2) >> 2)
 #define MV_LT(v, t) (abs((v)->u.mv.x) < (t) && abs((v)->u.mv.y) < (t)) /* less than */
+#define MV_GT(v, t) (abs((v)->u.mv.x) > (t) && abs((v)->u.mv.y) > (t)) /* greater than */
 #define MV_MAG(v) ((abs((v)->u.mv.x) + abs((v)->u.mv.y) + 1) >> 1) /* not actual mag */
 #define MV_CMP(v, vx, vy, t) (abs((v)->u.mv.x - (int) (vx)) < (t) && abs((v)->u.mv.y - (int) (vy)) < (t))
 #define MK_MV_COMP(fp, hp, qp) ((fp) * 4 + (hp) * 2 + (qp))
@@ -809,7 +810,7 @@ qpel(uint8_t *dec, uint8_t *ref)
 }
 
 static void
-test_subblock_intra_y(DSV_PARAMS *params, DSV_MV *mv,
+test_subblock_intra_y(DSV_PARAMS *params, DSV_MV *refmv, DSV_MV *mv,
         DSV_PLANE *srcp, DSV_PLANE *refp,
         int detail_src, int avg_src, int neidif, unsigned ratio,
         int bw, int bh)
@@ -822,11 +823,19 @@ test_subblock_intra_y(DSV_PARAMS *params, DSV_MV *mv,
             DSV_MASK_INTRA10,
             DSV_MASK_INTRA11,
     };
+    if (refmv == NULL) {
+        refmv = mv;
+    }
     sbw = bw / 2;
     sbh = bh / 2;
-    if (sbw == 0 || sbh == 0 || mv->u.all == 0) {
+    if (sbw == 0 || sbh == 0 || (refmv->u.all == 0 && mv->u.all == 0)) {
         return;
     }
+
+    if (MV_LT(mv, 4) && ratio <= 26 && neidif < 6) {
+        return;
+    }
+
     psyscale = dsv_spatial_psy_factor(params, -1);
     bit_index = 0;
     /* increase detail bias proportionally to how similar the MV was to its neighbors */
@@ -847,6 +856,7 @@ test_subblock_intra_y(DSV_PARAMS *params, DSV_MV *mv,
             avg_sub = block_avg(mvr_d, refp->stride, sbw, sbh);
             sse_intra(src_d, srcp->stride, mvr_d, refp->stride, avg_sub, avg_src, sbw, sbh, &sub_pred_err, &src_pred_err, &intererr);
             intererr = intererr * ratio >> 5;
+
             local_detail = block_detail(src_d, srcp->stride, sbw, sbh, &avgs[bit_index]);
             if (local_detail > (unsigned) (3 * bw * bh)) {
                 goto next;
@@ -1373,6 +1383,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err)
                     int neidif, oob_vector; /* out of bounds */
                     unsigned skipt = (quant_rd >> 19);
                     unsigned ratio = 1 << 5; /* ratio of subpel_min_err / fullpel_min_err */
+                    DSV_MV *refmv = NULL;
 
                     if (DSV_IS_SUBPEL(mv)) {
                         ratio = (best << 5) / (best_fp + !best_fp);
@@ -1470,9 +1481,11 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err)
                             DSV_MV_SET_SIMCMPLX(mv, 1);
                         }
                     }
-
+                    if (hme->ref_mvf != NULL) {
+                        refmv = &hme->ref_mvf[i + j * nxb];
+                    }
 #if 1 /* have intra blocks */
-                    test_subblock_intra_y(params, mv,
+                    test_subblock_intra_y(params, refmv, mv,
                                           &srcp, &refp,
                                           var_src, avg_src, neidif, ratio,
                                           bw, bh);

@@ -40,7 +40,8 @@ extern void conv422to420(DSV_PLANE *srcf, DSV_PLANE *dstf);
 extern void conv411to420(DSV_PLANE *srcf, DSV_PLANE *dstf);
 extern void conv410to420(DSV_PLANE *srcf, DSV_PLANE *dstf);
 
-extern int dsv_y4m_read_hdr(FILE *in, int *w, int *h, int *subsamp, int *framerate, int *aspect);
+extern int dsv_y4m_read_hdr(FILE *in, int *w, int *h, int *subsamp, int *framerate, int *aspect, size_t *full_hdrsz);
+extern int dsv_y4m_read(FILE *in, int fno, size_t full_hdrsz, uint8_t *o, int width, int height, int subsamp);
 extern int dsv_y4m_read_seq(FILE *in, uint8_t *o, int w, int h, int subsamp);
 extern void dsv_y4m_write_hdr(FILE *out, int w, int h, int subsamp, int fpsn, int fpsd, int aspn, int aspd);
 extern void dsv_y4m_write_frame_hdr(FILE *out);

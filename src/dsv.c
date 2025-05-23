@@ -398,36 +398,49 @@ dsv_movec_pred(DSV_MV *vecs, DSV_PARAMS *p, int x, int y, int *px, int *py)
 }
 
 /* how similar a motion vector is to its top / left neighbors */
-extern int
-dsv_neighbordif(DSV_MV *vecs, DSV_PARAMS *p, int x, int y)
+extern void
+dsv_neighbordif2(DSV_MV *vecs, DSV_PARAMS *p, int x, int y, int *dx, int *dy)
 {
     DSV_MV *mv;
     DSV_MV *cmv;
-    int d0, d1, cmx, cmy;
+    int cmx, cmy;
     int vx[2], vy[2];
 
     cmv = &vecs[x + y * p->nblocks_h];
     cmx = cmv->u.mv.x;
     cmy = cmv->u.mv.y;
     if (abs(cmx) < 2 && abs(cmy) < 2) {
-        return 0;
+        *dx = *dy = 0;
+        return;
     }
     vx[0] = vx[1] = cmx;
     vy[0] = vy[1] = cmy;
     if (x > 0) { /* left */
         mv = (vecs + y * p->nblocks_h + (x - 1));
-        vx[0] = mv->u.mv.x;
-        vy[0] = mv->u.mv.y;
+        if (mv->u.all && !DSV_MV_IS_SKIP(mv)) {
+            vx[0] = mv->u.mv.x;
+            vy[0] = mv->u.mv.y;
+        }
     }
     if (y > 0) { /* top */
         mv = (vecs + (y - 1) * p->nblocks_h + x);
-        vx[1] = mv->u.mv.x;
-        vy[1] = mv->u.mv.y;
+        if (mv->u.all && !DSV_MV_IS_SKIP(mv)) {
+            vx[1] = mv->u.mv.x;
+            vy[1] = mv->u.mv.y;
+        }
     }
     /* magnitude of current motion vector subtracted from its left neighbor */
-    d0 = abs(vx[0] - cmx) + abs(vy[0] - cmy);
+    *dx = abs(vx[0] - cmx) + abs(vy[0] - cmy);
     /* magnitude of current motion vector subtracted from its top neighbor */
-    d1 = abs(vx[1] - cmx) + abs(vy[1] - cmy);
+    *dy = abs(vx[1] - cmx) + abs(vy[1] - cmy);
+}
+
+/* how similar a motion vector is to its top / left neighbors */
+extern int
+dsv_neighbordif(DSV_MV *vecs, DSV_PARAMS *p, int x, int y)
+{
+    int d0, d1;
+    dsv_neighbordif2(vecs, p, x, y, &d0, &d1);
     return (d0 + d1) / 3;
 }
 

@@ -113,6 +113,7 @@ extern int dsv_lb2(unsigned n);
 
 extern int dsv_mv_cost(DSV_MV *vecs, DSV_PARAMS *p, int i, int j, int mx, int my, int q, int sqr);
 extern void dsv_movec_pred(DSV_MV *vecs, DSV_PARAMS *p, int x, int y, int *px, int *py);
+extern void dsv_neighbordif2(DSV_MV *vecs, DSV_PARAMS *p, int x, int y, int *dx, int *dy);
 extern int dsv_neighbordif(DSV_MV *vecs, DSV_PARAMS *p, int x, int y);
 extern int dsv_spatial_psy_factor(DSV_PARAMS *p, int subband);
 extern DSV_MV *dsv_intra_analysis(DSV_FRAME *src, DSV_PARAMS *params);

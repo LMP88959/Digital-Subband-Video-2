@@ -182,7 +182,7 @@ read_token(FILE *in, char *line, char delim)
 }
 
 extern int
-dsv_y4m_read_hdr(FILE *in, int *w, int *h, int *subsamp, int *framerate, int *aspect)
+dsv_y4m_read_hdr(FILE *in, int *w, int *h, int *subsamp, int *framerate, int *aspect, size_t *full_hdrsz)
 {
 #define Y4M_HDR "YUV4MPEG2 "
 #define Y4M_TAG_DELIM 0x20
@@ -194,6 +194,7 @@ dsv_y4m_read_hdr(FILE *in, int *w, int *h, int *subsamp, int *framerate, int *as
     char line[256];
     int interlace = 0;
     int c = 0, res;
+    *full_hdrsz = 0;
     if (fread(line, 1, sizeof(Y4M_HDR) - 1, in) != (sizeof(Y4M_HDR) - 1)) {
         DSV_ERROR(("Bad Y4M header"));
         return 0;
@@ -301,7 +302,92 @@ done:
     if (interlace != 'p') {
         DSV_WARNING(("DSV does not explicitly support interlaced video."));
     }
+    *full_hdrsz = ftell(in);
     return 1;
+}
+
+#define Y4M_FRAME_HDR "FRAME\n"
+
+extern int
+dsv_y4m_read(FILE *in, int fno, size_t full_hdrsz, uint8_t *o, int width, int height, int subsamp)
+{
+    size_t npix, offset, chrsz = 0;
+    size_t nread;
+    size_t hdrsz;
+    char line[8];
+    hdrsz = sizeof(Y4M_FRAME_HDR) - 1;
+
+    if (in == NULL) {
+        return -1;
+    }
+    if (fno < 0) {
+        return -1;
+    }
+
+    npix = width * height;
+
+    switch (subsamp) {
+        case DSV_SUBSAMP_444:
+            offset = npix * 3;
+            chrsz = npix;
+            break;
+        case DSV_SUBSAMP_422:
+            offset = npix * 2;
+            chrsz = (width / 2) * height;
+            break;
+        case DSV_SUBSAMP_420:
+        case DSV_SUBSAMP_411:
+            offset = npix * 3 / 2;
+            chrsz = npix / 4;
+            break;
+        case DSV_SUBSAMP_410:
+            offset = npix * 9 / 8;
+            chrsz = npix / 16;
+            break;
+        default:
+            DSV_ERROR(("unsupported format"));
+            DSV_ASSERT(0);
+            break;
+    }
+    offset = full_hdrsz + fno * (offset + hdrsz);
+    if (fseek(in, offset, SEEK_SET)) {
+        long int pos = ftell(in);
+        if (pos < 0) {
+            return -1;
+        }
+        if ((pos % (hdrsz + npix + chrsz + chrsz)) == 0) {
+            return -2;
+        }
+        return -1;
+    }
+    nread = fread(line, 1, hdrsz, in);
+    if (nread != hdrsz) {
+        if (nread == 0) {
+            return -2;
+        }
+        DSV_ERROR(("failed read"));
+        return -1;
+    }
+    if (memcmp(line, Y4M_FRAME_HDR, hdrsz) != 0) {
+        DSV_ERROR(("bad Y4M frame header [%s]", line));
+        return -1;
+    }
+    nread = fread(o, 1, npix + chrsz + chrsz, in);
+    if (nread != (npix + chrsz + chrsz)) {
+        long int pos;
+        if (nread == 0) {
+            return -2;
+        }
+        pos = ftell(in);
+        if (pos < 0) {
+            return -1;
+        }
+        if ((pos % (hdrsz + npix + chrsz + chrsz)) == 0) {
+            return -2;
+        }
+        return -1;
+    }
+    return 0;
 }
 
 extern int
@@ -309,7 +395,6 @@ dsv_y4m_read_seq(FILE *in, uint8_t *o, int w, int h, int subsamp)
 {
     size_t npix, chrsz = 0;
     size_t nread;
-#define Y4M_FRAME_HDR "FRAME\n"
     size_t hdrsz;
     char line[8];
     hdrsz = sizeof(Y4M_FRAME_HDR) - 1;
@@ -354,7 +439,7 @@ dsv_y4m_read_seq(FILE *in, uint8_t *o, int w, int h, int subsamp)
         if (pos < 0) {
             return -1;
         }
-        if ((pos % (npix + chrsz + chrsz)) == 0) {
+        if ((pos % (hdrsz + npix + chrsz + chrsz)) == 0) {
             return -2;
         }
         return -1;
