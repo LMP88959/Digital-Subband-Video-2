@@ -42,11 +42,11 @@
  *   10 :
  *
  */
-
 #define DRV_HEADER "Envel Graphics DSV v2.%d codec by EMMIR 2024-2025. "\
                    "encoder v%d. "  \
-                   "decoder v%d.\n", \
-                    DSV_VERSION_MINOR, DSV_ENCODER_VERSION, DSV_DECODER_VERSION
+                   "decoder v%d. build %d\n", \
+                    DSV_VERSION_MINOR, \
+                    DSV_ENCODER_VERSION, DSV_DECODER_VERSION, DSV_VERSION_BUILD
 
 static int encoding = 0;
 static char *progname = NULL;
