@@ -230,16 +230,16 @@ static struct PARAM enc_params[] = {
 static struct PARAM dec_params[] = {
     { "out420p", 0, 0, 1, NULL,
             "convert video to 4:2:0 chroma subsampling before saving output. 0 = default",
-            ""},
+            NULL},
     { "y4m", 0, 0, 1, NULL,
             "write output as a YUV4MPEG2 (Y4M) file. 0 = default",
-            ""},
+            NULL},
     { "postsharp", 0, 0, 1, NULL,
             "postprocessing/decoder side frame sharpening. 0 = disabled, 1 = enabled, 0 = default",
-            ""},
+            NULL},
     { "drawinfo", 0, 0, (DSV_DRAW_STABHQ | DSV_DRAW_MOVECS | DSV_DRAW_IBLOCK), NULL,
             "draw debugging information on the decoded frames (bit OR together to get multiple at the same time):\n\t\t1 = draw stability info\n\t\t2 = draw motion vectors\n\t\t4 = draw intra subblocks. 0 = default",
-            ""},
+            NULL},
     { NULL, 0, 0, 0, NULL, "", "" }
 };
 
@@ -285,7 +285,7 @@ print_params(struct PARAM *pars, int extra)
 
         printf("\t-%s : %s\n", par->prefix, par->desc);
         printf("\t      [min = %d, max = %d]\n", par->min, par->max);
-        if (extra) {
+        if (extra && par->extra) {
             printf("\textra info: %s\n\n", par->extra);
         }
 
@@ -558,6 +558,7 @@ encode(void)
     int y4m_in = 0;
     int write_eos = 1;
     int no_more_data = 0;
+    size_t full_hdrsz = 0;
 
     if (verbose) {
         printf(DRV_HEADER);
@@ -595,7 +596,7 @@ encode(void)
         int fr[2] = { 1, 1 };
         int asp[2] = { 1, 1 };
 
-        if (!dsv_y4m_read_hdr(inpfile, &md.width, &md.height, &md.subsamp, fr, asp)) {
+        if (!dsv_y4m_read_hdr(inpfile, &md.width, &md.height, &md.subsamp, fr, asp, &full_hdrsz)) {
             printf("bad Y4M file %s\n", opts.inp);
             return EXIT_FAILURE;
         }
@@ -734,7 +735,11 @@ encode(void)
             goto end_of_stream;
         }
         if (y4m_in) {
-            frame_read = dsv_y4m_read_seq(inpfile, picture, w, h, md.subsamp);
+            if (opts.inp[0] == USE_STDIO_CHAR) {
+                frame_read = dsv_y4m_read_seq(inpfile, picture, w, h, md.subsamp);
+            } else {
+                frame_read = dsv_y4m_read(inpfile, frno, full_hdrsz, picture, w, h, md.subsamp);
+            }
         } else {
             if (opts.inp[0] == USE_STDIO_CHAR) {
                 frame_read = dsv_yuv_read_seq(inpfile, picture, w, h, md.subsamp);
@@ -776,7 +781,7 @@ encode(void)
         frno++;
         continue;
 end_of_stream:
-        if (write_eos || (!write_eos && no_more_data)) {
+        if (write_eos || (!write_eos && no_more_data && bufsz > 0)) {
             dsv_enc_end_of_stream(&enc, bufs);
             savebuffer(&bufs[0]);
             dsv_buf_free(&bufs[0]);
@@ -872,6 +877,7 @@ decode(void)
     DSV_META *meta = NULL;
     DSV_FRAME *frame;
     int code, first = 1;
+    DSV_FNUM dec_frameno = 0;
     DSV_FNUM frameno = 0;
     int to_420p, as_y4m, postsharp;
     FILE *inpfile, *outfile;
@@ -972,7 +978,7 @@ decode(void)
                     first = 0;
                 }
                 if (dsv_yuv_write(outfile, frameno, f420->planes) < 0) {
-                    DSV_ERROR(("failed to write frame %d", frameno));
+                    DSV_ERROR(("failed to write frame (ID %u, actual %u)", frameno, dec_frameno));
                 }
                 dsv_frame_ref_dec(f420);
             } else {
@@ -989,19 +995,20 @@ decode(void)
                     DSV_FRAME *tfr = dsv_clone_frame(frame, 0);
                     dsv_post_process(tfr->planes + 0);
                     if (dsv_yuv_write_seq(outfile, tfr->planes) < 0) {
-                        DSV_ERROR(("failed to write frame %d", frameno));
+                        DSV_ERROR(("failed to write frame (ID %u, actual %u)", frameno, dec_frameno));
                     }
                     dsv_frame_ref_dec(tfr);
                 } else {
                     if (dsv_yuv_write_seq(outfile, frame->planes) < 0) {
-                        DSV_ERROR(("failed to write frame %d", frameno));
+                        DSV_ERROR(("failed to write frame (ID %u, actual %u)", frameno, dec_frameno));
                     }
                 }
             }
             if (verbose) {
-                printf("\rdecoded frame %d", frameno);
+                printf("\rdecoded frame (ID %u, actual %u)", frameno, dec_frameno);
                 fflush(stdout);
             }
+            dec_frameno++;
             dsv_frame_ref_dec(frame);
         }
     }
