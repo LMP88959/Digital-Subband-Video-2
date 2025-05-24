@@ -513,12 +513,20 @@ luma_filter(DSV_MV *vecs, int q, DSV_PARAMS *p, DSV_PLANE *dp, int do_filter)
                 int tedgev = edgev || DSV_MV_IS_INTRA(mv);
 
                 texf4x4(dxy, dp->stride, &sh, &sv);
-                /* scale neighbordif vector by absolute value of motion vector.
-                 * shifting right by 4 to bias against blurring in low motion */
-                ndx = ndx * amx >> 4;
-                ndy = ndy * amy >> 4;
-                /* scale new neighbordif vector by the horizontal/vertical texture */
-                tt = (ndx * curve_tex(sh) + ndy * curve_tex(sv) + 4) >> 3;
+
+                /* filter strength scaled proportionally
+                 * with the motion block vector's neighbor difference
+                 */
+                if (tedgeh || tedgev) {
+                    /* 4x4 block edges that coincide with motion block edges
+                     * should have the 4x4 block's texture influence the strength
+                     * because the texture is likely to have come from poor
+                     * motion compensation
+                     */
+                    tt = (ndx * amx * curve_tex(sh) + ndy * amy * curve_tex(sv) + 64) >> 7;
+                } else {
+                    tt = (ndx * amx + ndy * amy + 4) >> 3;
+                }
                 tt = (CLAMP(tt, 0, fthresh) * q) >> DSV_MAX_QP_BITS;
                 if (sh > 2 * sv) {
                     ivfilter4x4(dp, x, y, tedgev, tt, tt * 3 / 4);
