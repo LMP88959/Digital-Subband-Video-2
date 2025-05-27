@@ -860,8 +860,8 @@ dsv_inv_sbt(DSV_PLANE *dst, DSV_COEFS *src, int q, DSV_FMETA *fm)
     alloc_temp((w + 2) * (h + 2));
     temp_buf_pad = temp_buf + w;
 
-    hqp = (fm->cur_plane == 0) ? (q / (fm->isP ? 14 : 8)) : (q / 2);
     for (l = lvls; l > 0; l--) {
+        hqp = (fm->cur_plane == 0) ? (q / (fm->isP ? 14 : (l > 4 ? 2 : 8))) : (q / 2);
         if (fm->params->lossless) {
             if ((l >= 1 && l <= (lvls - 2))) {
                 inv_2d(temp_buf_pad, src->data, w, h, l, ifilterLOSSLESS);
