@@ -139,8 +139,8 @@ reflect(int i, int n)
  * preserving them better while also creating a general illusion of detail */
 
 /* L2 ringing filter */
-#define R20 2
-#define R2S 2
+#define R20 3
+#define R2S 3
 #define R2A (1 << (R2S - 1))
 
 /* L2 standard filter */
@@ -253,6 +253,12 @@ reflect(int i, int n)
 #define HPFA 32
 #define HPFB 16
 
+#define LPFAR 46
+#define LPFBR 20
+#define LPFCR 9
+#define LPFDR 4
+#define LPFER 2
+
 #define ASFNORM 6
 
 #define ASF93_LO(i, vs, s) \
@@ -261,6 +267,13 @@ reflect(int i, int n)
                  - LPFC * (vs[rg(i - 2, s)] + vs[rg(i + 2, s)])\
                  - LPFD * (vs[rg(i - 3, s)] + vs[rg(i + 3, s)])\
                  + LPFE * (vs[rg(i - 4, s)] + vs[rg(i + 4, s)]))
+
+#define ASF93_LO_R(i, vs, s) \
+                  (LPFAR *  vs[rg(i + 0, s)] \
+                 + LPFBR * (vs[rg(i - 1, s)] + vs[rg(i + 1, s)]) \
+                 - LPFCR * (vs[rg(i - 2, s)] + vs[rg(i + 2, s)])\
+                 - LPFDR * (vs[rg(i - 3, s)] + vs[rg(i + 3, s)])\
+                 + LPFER * (vs[rg(i - 4, s)] + vs[rg(i + 4, s)]))
 
 #define ASF93_HI(i, vs, s)\
                   (HPFA *  vs[rg(i + 0, s)] \
@@ -378,15 +391,21 @@ ifilterL2_a(DSV_SBC *out, DSV_SBC *in, int n, int s, uint8_t *sb, int delta, int
  * (full frame size) and is only applied to the luma plane (which the spec
  * requires to have even dimensions) */
 static void
-filterL1(DSV_SBC *out, DSV_SBC *in, int n, int s)
+filterL1(DSV_SBC *out, DSV_SBC *in, int n, int s, uint8_t *sb, int delta, int sbs)
 {
-    int i, L, H;
-
+    int i, L, H, sbp = 0;
+    delta *= 2;
     for (i = 1; i < n - 2; i += 2) {
-        L = ASF93_LO((i - 1), in, s);
+        int bv = sb[(sbp >> DSV_BLOCK_INTERP_P) * sbs];
+        if (bv & DSV_IS_RINGING) {
+            L = ASF93_LO_R((i - 1), in, s);
+        } else {
+            L = ASF93_LO((i - 1), in, s);
+        }
         H = ASF93_HI((i - 0), in, s);
         out[(i + 0) / 2 * s] = (L + (1 << (ASFNORM - 2))) >> (ASFNORM - 1);
         out[(i + n) / 2 * s] = (H + (1 << (ASFNORM - 4))) >> (ASFNORM - 3);
+        sbp += delta;
     }
     /* deal with edges */
     in[1 * s] -= (in[0 * s] + in[2 * s] + 1) >> 1;
@@ -455,6 +474,29 @@ ifilterLOSSLESS(DSV_SBC *out, DSV_SBC *in, int n, int s)
     for (j = 0; j < sh; j++) { \
         ifilter(in + fw * j, tmp + fw * j, sw, 1); \
     } \
+}
+static void
+fwd_L1a_2d(DSV_SBC *tmp, DSV_SBC *in, int sW, int sH, int lvl, DSV_FMETA *fm)
+{
+    int i, j, bx = 0, by = 0, dbx, dby, w, h;
+    uint8_t *line;
+
+    w = DSV_ROUND_SHIFT(sW, lvl - 1);
+    h = DSV_ROUND_SHIFT(sH, lvl - 1);
+
+    /* stretch blockdata to fit sub-image */
+    dbx = (fm->params->nblocks_h << DSV_BLOCK_INTERP_P) / w;
+    dby = (fm->params->nblocks_v << DSV_BLOCK_INTERP_P) / h;
+    for (j = 0; j < h; j++) {
+        line = fm->blockdata + (by >> DSV_BLOCK_INTERP_P) * fm->params->nblocks_h;
+        filterL1(tmp + sW * j, in + sW * j, w, 1, line, dbx, 1);
+        by += dby;
+    }
+    for (i = 0; i < w; i++) {
+        line = fm->blockdata + (bx >> DSV_BLOCK_INTERP_P);
+        filterL1(in + i, tmp + i, h, sW, line, dby, fm->params->nblocks_h);
+        bx += dbx;
+    }
 }
 
 /* adaptive */
@@ -839,7 +881,7 @@ dsv_fwd_sbt(DSV_PLANE *src, DSV_COEFS *dst, DSV_FMETA *fm)
         } else if (L2A_CONDITION) {
             fwd_L2a_2d(temp_buf_pad, dst->data, w, h, l, fm);
         } else if (L1_CONDITION) {
-            fwd_2d(temp_buf_pad, dst->data, w, h, l, filterL1);
+            fwd_L1a_2d(temp_buf_pad, dst->data, w, h, l, fm);
         } else {
             fwd(dst->data, temp_buf_pad, w, h, l);
         }
