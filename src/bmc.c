@@ -210,49 +210,63 @@ dsff4x4(uint8_t *a, int as)
     if (MAX(sh, sv) < 8) {
         return 0;
     }
-    /* find how much it should be smoothed, derived from 'texture' metric */
+    /* find how much it should be smoothed, derived from 'haar' metric */
     dsp2 = 255 - dsp2;
     dsp3 = 255 - dsp3;
-    sh = abs(dsp0 - dsp1) + abs(dsp3 - dsp2);
-    sv = (abs(dsp2 - dsp1) + abs(dsp3 - dsp0) + 2) >> 2;
+    sh = abs(dsp0 - dsp1 + dsp2 - dsp3) >> 0;
+    sv = abs(dsp0 + dsp1 - dsp2 - dsp3) >> 2;
     if (sh > sv) {
         return (3 * sh + sv + 2) >> 2;
     }
     return (3 * sv + sh + 2) >> 2;
 }
 
-/* texture of a 4x4 block */
 static void
-texf4x4(uint8_t *ptr, int as, int *psh, int *psv)
+haar4x4(uint8_t *src, int as, int *psh, int *psv)
 {
-    int j, prev, px;
-    unsigned sh = 0, sv = 0;
-    uint8_t *prevptr;
+    uint8_t *spA, *spB;
+    int x0, x1, x2, x3;
+    int x, y;
+    int idx, HH, sh = 0, sv = 0;
 
-    j = 4;
-    prevptr = ptr;
-    while (j-- > 0) {
-        px = ptr[3];
-        sv += abs(px - prevptr[3]);
-        prev = px;
-        px = ptr[2];
-        sh += abs(px - prev);
-        sv += abs(px - prevptr[2]);
-        prev = px;
-        px = ptr[1];
-        sh += abs(px - prev);
-        sv += abs(px - prevptr[1]);
-        prev = px;
-        px = ptr[0];
-        sh += abs(px - prev);
-        sv += abs(px - prevptr[0]);
-        prev = px;
+    for (y = 0; y < 4; y += 2) {
+        spA = src + (y + 0) * as;
+        spB = src + (y + 1) * as;
+        for (x = 0, idx = 0; x < 4; x += 2, idx++) {
+            x0 = spA[x + 0];
+            x1 = spA[x + 1];
+            x2 = spB[x + 0];
+            x3 = spB[x + 1];
 
-        prevptr = ptr;
-        ptr += as;
+            HH = abs(x0 - x1 - x2 + x3) >> 1;
+            sh += abs(x0 - x1 + x2 - x3); /* LH */
+            sv += abs(x0 + x1 - x2 - x3); /* HL */
+            sh += HH; /* HH */
+            sv += HH; /* HH */
+        }
     }
     *psh = sh;
     *psv = sv;
+}
+
+static void
+artf4x4(uint8_t *a, int as, int *psh, int *psv, int *pslh, int *pslv)
+{
+    int dsp0, dsp1, dsp2, dsp3, HH;
+    haar4x4(a, as, psh, psv);
+
+    /* create downsampled pixels */
+    dsp0 = (a[0] + a[1] + a[as + 0] + a[as + 1] + 2) >> 2;
+    dsp1 = (a[2] + a[3] + a[as + 2] + a[as + 3] + 2) >> 2;
+    a += 2 * as;
+    dsp2 = (a[0] + a[1] + a[as + 0] + a[as + 1] + 2) >> 2;
+    dsp3 = (a[2] + a[3] + a[as + 2] + a[as + 3] + 2) >> 2;
+
+    *pslh = abs(dsp0 - dsp1 + dsp2 - dsp3);
+    *pslv = abs(dsp0 + dsp1 - dsp2 - dsp3);
+    HH = abs(dsp0 - dsp1 - dsp2 + dsp3) >> 1;
+    *pslh += HH;
+    *pslv += HH;
 }
 
 #define HISTBITS 4
@@ -353,7 +367,7 @@ curve_tex(int tt)
         return (8 - tt) * 8;
     }
     if (tt > 192) {
-        return 91 + (tt >> 1);
+        return 0;
     }
     return (tt - (8 - 1));
 }
@@ -407,11 +421,10 @@ dsv_intra_filter(int q, DSV_PARAMS *p, DSV_FMETA *fm, int c, DSV_PLANE *dp, int 
                 continue;
             }
             if (do_filter && !(flags & DSV_IS_RINGING)) {
-                int sh, sv;
-
-                texf4x4(DSV_GET_XY(dp, x, y), dp->stride, &sh, &sv);
+                int sh, sv, shl, svl;
+                artf4x4(DSV_GET_XY(dp, x, y), dp->stride, &sh, &sv, &shl, &svl);
                 /* only filter blocks with significant texture */
-                if (MAX(sh, sv) > 8) {
+                if ((MAX(sh, sv) < 256 && MAX(sh, sv) > 8)) {
                     if (flags & (DSV_IS_MAINTAIN | DSV_IS_STABLE)) {
                         tt = dsff4x4(DSV_GET_XY(dp, x, y), dp->stride);
                         if (flags & DSV_IS_STABLE) {
@@ -421,7 +434,8 @@ dsv_intra_filter(int q, DSV_PARAMS *p, DSV_FMETA *fm, int c, DSV_PLANE *dp, int 
                         tt >>= 2;
                     }
                     tt = (tt * 2 / 3);
-                    tt = (CLAMP(tt, 0, fthresh) * q) >> DSV_MAX_QP_BITS;
+                    tt = (tt * q) >> DSV_MAX_QP_BITS;
+                    tt = CLAMP(tt, 0, fthresh);
                     ihfilter4x4(dp, x, y, 0, tt, tt);
                     ivfilter4x4(dp, x, y, 0, tt, tt);
                     if (sh > sv) {
@@ -430,8 +444,9 @@ dsv_intra_filter(int q, DSV_PARAMS *p, DSV_FMETA *fm, int c, DSV_PLANE *dp, int 
                         tt = (3 * sv + sh);
                     }
                     tt = curve_tex(tt);
-                    tt = 16 + ((tt + 8) >> 4);
-                    tt = (CLAMP(tt, 0, fthresh) * q) >> DSV_MAX_QP_BITS;
+                    tt = 16 + ((tt + 2) >> 2);
+                    tt = (tt * q) >> DSV_MAX_QP_BITS;
+                    tt = CLAMP(tt, 0, fthresh);
                     ihfilter4x4(dp, x, y, 0, tt, tt);
                     ivfilter4x4(dp, x, y, 0, tt, tt);
                 }
@@ -464,21 +479,23 @@ luma_filter(DSV_MV *vecs, int q, DSV_PARAMS *p, DSV_PLANE *dp, int do_filter)
     q = compute_filter_q(p, q);
     fthresh = 32 * (14 - dsv_lb2(q));
     for (j = 0; j < nsby; j++) {
-        int edgev, fy;
+        int edgev, edgevs, fy;
 
         fy = (j * p->nblocks_v / nsby);
         edgev = ((j * FILTER_DIM) % p->blk_h) == 0;
+        edgevs = ((j * FILTER_DIM) % (p->blk_h / 2)) == 0;
         y = j * FILTER_DIM;
         if ((y + FILTER_DIM) >= dp->h) {
             continue;
         }
         for (i = 0; i < nsbx; i++) {
-            int edgeh, fx, ndx, ndy, amx, amy;
+            int edgeh, edgehs, fx, ndx, ndy, amx, amy;
             DSV_MV *mv;
             uint8_t *dxy;
 
             fx = (i * p->nblocks_h / nsbx);
             edgeh = ((i * FILTER_DIM) % p->blk_w) == 0;
+            edgehs = ((i * FILTER_DIM) % (p->blk_w / 2)) == 0;
             mv = &vecs[fx + fy * p->nblocks_h];
 
             x = i * FILTER_DIM;
@@ -489,9 +506,14 @@ luma_filter(DSV_MV *vecs, int q, DSV_PARAMS *p, DSV_PLANE *dp, int do_filter)
             if ((x + FILTER_DIM) >= dp->w) {
                 continue;
             }
+
+            amx = abs(mv->u.mv.x);
+            amy = abs(mv->u.mv.y);
+
             /* if current x,y is different than what was cached, update cache */
             if (do_filter && (fx != cached[0] || fy != cached[1] || cached[2] == NDCACHE_INVALID || cached[3] == NDCACHE_INVALID)) {
                 dsv_neighbordif2(vecs, p, fx, fy, &ndx, &ndy);
+
                 cached[0] = fx;
                 cached[1] = fy;
                 cached[2] = ndx;
@@ -503,38 +525,72 @@ luma_filter(DSV_MV *vecs, int q, DSV_PARAMS *p, DSV_PLANE *dp, int do_filter)
             }
 
             dxy = DSV_GET_XY(dp, x, y);
-
-            amx = abs(mv->u.mv.x);
-            amy = abs(mv->u.mv.y);
-
-            if (do_filter && (ndx || ndy)) {
-                int tt, sh, sv;
-                int tedgeh = edgeh || DSV_MV_IS_INTRA(mv);
-                int tedgev = edgev || DSV_MV_IS_INTRA(mv);
-
-                texf4x4(dxy, dp->stride, &sh, &sv);
-
-                /* filter strength scaled proportionally
-                 * with the motion block vector's neighbor difference
-                 */
-                if (tedgeh || tedgev) {
-                    /* 4x4 block edges that coincide with motion block edges
-                     * should have the 4x4 block's texture influence the strength
-                     * because the texture is likely to have come from poor
-                     * motion compensation
-                     */
-                    tt = (ndx * amx * curve_tex(sh) + ndy * amy * curve_tex(sv) + 64) >> 7;
-                } else {
-                    tt = (ndx * amx + ndy * amy + 4) >> 3;
+            if (DSV_MV_IS_INTRA(mv)) {
+                int intra_threshH = ((64 * q) >> DSV_MAX_QP_BITS);
+                int intra_threshL = ((32 * q) >> DSV_MAX_QP_BITS);
+                int intra = DSV_MV_IS_INTRA(mv);
+                int tedgeh = edgeh;
+                int tedgev = edgev;
+                intra_threshH = CLAMP(intra_threshH, 2, 32);
+                intra_threshL = CLAMP(intra_threshL, 2, 32);
+                if (intra && mv->submask != DSV_MASK_ALL_INTRA) {
+                    tedgeh |= edgehs;
+                    tedgev |= edgevs;
                 }
-                tt = (CLAMP(tt, 0, fthresh) * q) >> DSV_MAX_QP_BITS;
-                if (sh > 2 * sv) {
-                    ivfilter4x4(dp, x, y, tedgev, tt, tt * 3 / 4);
-                } else if (sv > 2 * sh) {
-                    ihfilter4x4(dp, x, y, tedgeh, tt, tt * 3 / 4);
+                ihfilter4x4(dp, x, y, tedgeh, intra_threshH, intra_threshL);
+                ivfilter4x4(dp, x, y, tedgev, intra_threshH, intra_threshL);
+                continue;
+            }
+            if (do_filter && (ndx || ndy)) {
+                int tt, addx, addy, sh, sv, shl, svl;
+                int intra = DSV_MV_IS_INTRA(mv);
+                int eprm = DSV_MV_IS_EPRM(mv);
+                int tedgeh = edgeh || eprm;
+                int tedgev = edgev || eprm;
+                int tndc;
+                if (intra && mv->submask != DSV_MASK_ALL_INTRA) {
+                    tedgeh |= edgehs;
+                    tedgev |= edgevs;
+                }
+                tndc = (ndx + ndy + 1) >> 1;
+                artf4x4(dxy, dp->stride, &sh, &sv, &shl, &svl);
+
+                if (sh < 2 * sv && sv < 2 * sh) {
+                    int ix, iy;
+                    if (ndx < amx) {
+                        ndx >>= 1;
+                    }
+                    if (ndy < amy) {
+                        ndy >>= 1;
+                    }
+                    shl = (shl > 128) ? 0 : (128 - shl);
+                    svl = (svl > 128) ? 0 : (128 - svl);
+
+                    ix = MIN(amx, 32);
+                    iy = MIN(amy, 32);
+                    /* interpolate between lower freq and higher freq energies */
+                    tt  = ((sh * (32 - iy) + shl * iy) + 16) >> 5;
+                    tt += ((sv * (32 - ix) + svl * ix) + 16) >> 5;
+                    tt = (tt + 1) >> 1;
+                    if (ndx < amy && ndy < amx) { /* neighbordif not significant enough */
+                        tt = 0;
+                    }
                 } else {
-                    ihfilter4x4(dp, x, y, tedgeh, tt, tt / 2);
-                    ivfilter4x4(dp, x, y, tedgev, tt, tt / 2);
+                    tt = (sh + sv + 1) >> 1;
+                }
+                tt = (tt * tndc + 4) >> 3;
+
+                tt = (MIN(tt, fthresh) * q) >> DSV_MAX_QP_BITS;
+                addx = (MIN(ndy, fthresh) * q) >> DSV_MAX_QP_BITS;
+                addy = (MIN(ndx, fthresh) * q) >> DSV_MAX_QP_BITS;
+
+                if (sh > 2 * sv || amy > 2 * amx) {
+                    ivfilter4x4(dp, x, y, tedgev, tt + addy, tt);
+                } else if (sv > 2 * sh || amx > 2 * amy) {
+                    ihfilter4x4(dp, x, y, tedgeh, tt + addx, tt);
+                } else {
+                    ihfilter4x4(dp, x, y, tedgeh, tt + addx, tt);
+                    ivfilter4x4(dp, x, y, tedgev, tt + addy, tt);
                 }
             }
 
@@ -570,21 +626,31 @@ chroma_filter(DSV_MV *vecs, int q, DSV_PARAMS *p, DSV_PLANE *dp)
             mv = &vecs[i + j * p->nblocks_h];
 
             if (!DSV_MV_IS_SKIP(mv)) {
-                int z, t = intra_thresh;
+                int z, tx = intra_thresh, ty = intra_thresh;
                 if (!DSV_MV_IS_INTRA(mv)) {
-                    t = (dsv_neighbordif(vecs, p, i, j) * q) >> DSV_MAX_QP_BITS;
-                    t = 4 + t * t;
-                    t = MIN(64, t);
+                    int ndx, ndy, amx, amy;
+                    dsv_neighbordif2(vecs, p, i, j, &ndx, &ndy);
+                    amx = abs(mv->u.mv.x);
+                    amy = abs(mv->u.mv.y);
+                    if (ndx < amy && ndy < amx) { /* neighbordif not significant enough */
+                        tx = ty = 0;
+                    } else {
+                        tx = ndy;
+                        ty = ndx;
+                        tx = (MIN(tx, 64) * q) >> DSV_MAX_QP_BITS;
+                        ty = (MIN(ty, 64) * q) >> DSV_MAX_QP_BITS;
+                    }
                 }
+
                 /* only filtering top and left sides */
                 for (z = 0; z < bh; z += FILTER_DIM) {
                     if ((y + z + FILTER_DIM) < dp->h) {
-                        ihfilter4x4(dp, x, y + z, 0, t, t);
+                        ihfilter4x4(dp, x, y + z, 0, tx, tx);
                     }
                 }
                 for (z = 0; z < bw; z += FILTER_DIM) {
                     if ((x + z + FILTER_DIM) < dp->w) {
-                        ivfilter4x4(dp, x + z, y, 0, t, t);
+                        ivfilter4x4(dp, x + z, y, 0, ty, ty);
                     }
                 }
             }
