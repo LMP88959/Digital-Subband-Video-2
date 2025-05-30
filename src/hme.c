@@ -1427,6 +1427,9 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err)
                         }
                         sth += var_src / MAX(mag, 1);
                         sth += yarea * hme->enc->skip_block_thresh;
+                        if (hme->quant < (1 << (DSV_MAX_QP_BITS - 2))) {
+                            sth = sth * hme->quant >> (DSV_MAX_QP_BITS - 2);
+                        }
                         yuv_err(zerr, zsub, src, ref, bx, by, bw, bh, cbx, cby, cbw, cbh);
                         ysub = MAX(MAX(zsub[0][0], zsub[0][1]), MAX(zsub[0][2], zsub[0][3]));
                         if (((ysub * 4)) <= sth / 2 && zerr[1] <= sth / 8 && zerr[2] <= sth / 8) {
@@ -1453,6 +1456,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err)
                             mag = MV_MAG(mv);
                             xth += var_src / (mag + 4);
                             xth = MAX((int) xth - ((int) yarea * (neidif * 2)), 0);
+                            xth = xth * hme->quant >> DSV_MAX_QP_BITS;
 
                             ysub = MAX(MAX(bsub[0][0], bsub[0][1]), MAX(bsub[0][2], bsub[0][3]));
                             usub = MAX(MAX(bsub[1][0], bsub[1][1]), MAX(bsub[1][2], bsub[1][3]));
