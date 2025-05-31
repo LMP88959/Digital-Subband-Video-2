@@ -25,6 +25,9 @@
 #define CC_CONDITION   (!IS_LUMA && !IS_P && (l >= 1 && l <= (lvls - 2)))
 #define L1_CONDITION   (IS_LUMA  && !IS_P && (l == 1))
 
+/* overflow safety */
+#define OVF_SAFETY_CONDITION (l >= 6 && !fm->params->lossless)
+
 #define DO_SHREX 1 /* shrink-expand */
 #define SHREX4I 3
 #define SHREX4P 2
@@ -548,7 +551,7 @@ inv_L2a_2d(DSV_SBC *tmp, DSV_SBC *in, int sW, int sH, int lvl, DSV_FMETA *fm)
 }
 
 static void
-fwd(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl)
+fwd(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int ovf_safety)
 {
     DSV_SBC *os, *od, *dpLL, *dpLH, *dpHL, *dpHH;
     int x0, x1, x2, x3;
@@ -580,7 +583,7 @@ fwd(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl)
             x2 = spB[x + 0];
             x3 = spB[x + 1];
 
-            dpLL[idx] = (x0 + x1 + x2 + x3); /* LL */
+            dpLL[idx] = (x0 + x1 + x2 + x3) / (ovf_safety ? 2 : 1); /* LL */
             dpLH[idx] = (x0 - x1 + x2 - x3); /* LH */
             dpHL[idx] = (x0 + x1 - x2 - x3); /* HL */
             dpHH[idx] = (x0 - x1 - x2 + x3); /* HH */
@@ -589,7 +592,7 @@ fwd(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl)
             x0 = spA[x + 0];
             x2 = spB[x + 0];
 
-            dpLL[idx] = 2 * (x0 + x2); /* LL */
+            dpLL[idx] = 2 * (x0 + x2) / (ovf_safety ? 2 : 1); /* LL */
             dpHL[idx] = 2 * (x0 - x2); /* HL */
         }
         dpLL += width;
@@ -603,13 +606,13 @@ fwd(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl)
             x0 = spA[x + 0];
             x1 = spA[x + 1];
 
-            dpLL[idx] = 2 * (x0 + x1); /* LL */
+            dpLL[idx] = 2 * (x0 + x1) / (ovf_safety ? 2 : 1); /* LL */
             dpLH[idx] = 2 * (x0 - x1); /* LH */
         }
         if (oddw) {
             x0 = spA[x + 0];
 
-            dpLL[idx] = (x0 * 4); /* LL */
+            dpLL[idx] = (x0 * 4) / (ovf_safety ? 2 : 1); /* LL */
         }
     }
     cpysub(os, od, ws, hs, width);
@@ -617,7 +620,7 @@ fwd(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl)
 
 /* C.3.1.1 Haar Simple Inverse Transform */
 static void
-inv_simple(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl)
+inv_simple(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int ovf_safety)
 {
     int x, y, woff, hoff, ws, hs, oddw, oddh;
     int LL, LH, HL, HH;
@@ -645,7 +648,7 @@ inv_simple(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl)
         dpA = dst + (y + 0) * width;
         dpB = dst + (y + 1) * width;
         for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
-            LL = spLL[idx];
+            LL = spLL[idx] << ovf_safety;
             LH = spLH[idx];
             HL = spHL[idx];
             HH = spHH[idx];
@@ -656,7 +659,7 @@ inv_simple(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl)
             dpB[x + 1] = (LL - LH - HL + HH) / 4; /* HH */
         }
         if (oddw) {
-            LL = spLL[idx];
+            LL = spLL[idx] << ovf_safety;
             HL = spHL[idx];
 
             dpA[x + 0] = (LL + HL) / 4; /* LL */
@@ -670,14 +673,14 @@ inv_simple(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl)
     if (oddh) {
         DSV_SBC *dpA = dst + (y + 0) * width;
         for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
-            LL = spLL[idx];
+            LL = spLL[idx] << ovf_safety;
             LH = spLH[idx];
 
             dpA[x + 0] = (LL + LH) / 4; /* LL */
             dpA[x + 1] = (LL - LH) / 4; /* LH */
         }
         if (oddw) {
-            LL = spLL[idx];
+            LL = spLL[idx] << ovf_safety;
 
             dpA[x + 0] = (LL / 4); /* LL */
         }
@@ -687,7 +690,7 @@ inv_simple(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl)
 
 /* C.3.1.2 Haar Filtered Inverse Transform */
 static void
-inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqp)
+inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqp, int ovf_safety)
 {
     int x, y, woff, hoff, ws, hs, oddw, oddh;
     int LL, LH, HL, HH;
@@ -719,14 +722,14 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqp)
             int inX = x > 0 && x < (ws - oddw - 1);
             int nudge, t, lp, ln, mn, mx;
 
-            LL = spLL[idx];
+            LL = spLL[idx] << ovf_safety;
             LH = spLH[idx];
             HL = spHL[idx];
             HH = spHH[idx];
 
             if (inX) {
-                lp = spLL[idx - 1]; /* prev */
-                ln = spLL[idx + 1]; /* next */
+                lp = spLL[idx - 1] << ovf_safety; /* prev */
+                ln = spLL[idx + 1] << ovf_safety; /* next */
                 mx = LL - ln; /* find difference between LL values */
                 mn = lp - LL;
                 if (mn > mx) {
@@ -745,8 +748,8 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqp)
                 }
             }
             if (inY) { /* do the same as above but in the Y direction */
-                lp = spLL[idx - width];
-                ln = spLL[idx + width];
+                lp = spLL[idx - width] << ovf_safety;
+                ln = spLL[idx + width] << ovf_safety;
                 mx = LL - ln;
                 mn = lp - LL;
                 if (mn > mx) {
@@ -769,7 +772,7 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqp)
             dpB[x + 1] = (LL - LH - HL + HH) / 4; /* HH */
         }
         if (oddw) {
-            LL = spLL[idx];
+            LL = spLL[idx] << ovf_safety;
             HL = spHL[idx];
 
             dpA[x + 0] = (LL + HL) / 4; /* LL */
@@ -783,14 +786,14 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqp)
     if (oddh) {
         DSV_SBC *dpA = dst + (y + 0) * width;
         for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
-            LL = spLL[idx];
+            LL = spLL[idx] << ovf_safety;
             LH = spLH[idx];
 
             dpA[x + 0] = (LL + LH) / 4; /* LL */
             dpA[x + 1] = (LL - LH) / 4; /* LH */
         }
         if (oddw) {
-            LL = spLL[idx];
+            LL = spLL[idx] << ovf_safety;
 
             dpA[x + 0] = LL / 4; /* LL */
         }
@@ -851,7 +854,7 @@ nlevels(int w, int h)
 extern void
 dsv_fwd_sbt(DSV_PLANE *src, DSV_COEFS *dst, DSV_FMETA *fm)
 {
-    int w, h, lvls, l;
+    int w, h, lvls, l, ovf_safety;
     DSV_SBC *temp_buf_pad;
 
     w = dst->width;
@@ -864,11 +867,12 @@ dsv_fwd_sbt(DSV_PLANE *src, DSV_COEFS *dst, DSV_FMETA *fm)
     temp_buf_pad = temp_buf + w;
 
     for (l = 1; l <= lvls; l++) {
+        ovf_safety = OVF_SAFETY_CONDITION;
         if (fm->params->lossless) {
             if ((l >= 1 && l <= (lvls - 2))) {
                 fwd_2d(temp_buf_pad, dst->data, w, h, l, filterLOSSLESS);
             } else {
-                fwd(dst->data, temp_buf_pad, w, h, l);
+                fwd(dst->data, temp_buf_pad, w, h, l, ovf_safety);
             }
             continue;
         }
@@ -883,7 +887,7 @@ dsv_fwd_sbt(DSV_PLANE *src, DSV_COEFS *dst, DSV_FMETA *fm)
         } else if (L1_CONDITION) {
             fwd_L1a_2d(temp_buf_pad, dst->data, w, h, l, fm);
         } else {
-            fwd(dst->data, temp_buf_pad, w, h, l);
+            fwd(dst->data, temp_buf_pad, w, h, l, ovf_safety);
         }
     }
 }
@@ -892,7 +896,7 @@ dsv_fwd_sbt(DSV_PLANE *src, DSV_COEFS *dst, DSV_FMETA *fm)
 extern void
 dsv_inv_sbt(DSV_PLANE *dst, DSV_COEFS *src, int q, DSV_FMETA *fm)
 {
-    int w, h, lvls, l, hqp;
+    int w, h, lvls, l, hqp, ovf_safety;
     DSV_SBC *temp_buf_pad;
 
     w = src->width;
@@ -904,11 +908,13 @@ dsv_inv_sbt(DSV_PLANE *dst, DSV_COEFS *src, int q, DSV_FMETA *fm)
 
     for (l = lvls; l > 0; l--) {
         hqp = (fm->cur_plane == 0) ? (q / (fm->isP ? 14 : (l > 4 ? 2 : 8))) : (q / 2);
+        ovf_safety = OVF_SAFETY_CONDITION;
+
         if (fm->params->lossless) {
             if ((l >= 1 && l <= (lvls - 2))) {
                 inv_2d(temp_buf_pad, src->data, w, h, l, ifilterLOSSLESS);
             } else {
-                inv_simple(src->data, temp_buf_pad, w, h, l);
+                inv_simple(src->data, temp_buf_pad, w, h, l, ovf_safety);
             }
             continue;
         }
@@ -924,9 +930,9 @@ dsv_inv_sbt(DSV_PLANE *dst, DSV_COEFS *src, int q, DSV_FMETA *fm)
             inv_2d(temp_buf_pad, src->data, w, h, l, ifilterL1);
         } else {
             if (fm->cur_plane == 0 || !fm->isP) {
-                inv(src->data, temp_buf_pad, w, h, l, hqp);
+                inv(src->data, temp_buf_pad, w, h, l, hqp, ovf_safety);
             } else {
-                inv_simple(src->data, temp_buf_pad, w, h, l);
+                inv_simple(src->data, temp_buf_pad, w, h, l, ovf_safety);
             }
         }
     }
