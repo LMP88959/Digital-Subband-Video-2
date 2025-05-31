@@ -173,7 +173,7 @@ reflect(int i, int n)
 /* same as above but also SHREX's the high freq coef */
 #define SCALE_PACK_SHREX(scaleL, scaleH, s, shrex)    \
   for (i = 0; i < even_n; i += 2) {                   \
-      int th = scaleH(in[(i + 1) * s]);               \
+      DSV_SBC th = scaleH(in[(i + 1) * s]);           \
       out[(i + 0) / 2 * s] = scaleL(in[(i + 0) * s]); \
       out[(i + h) / 2 * s] = th - DSV_SAR(th, shrex); \
   }                                                   \
@@ -181,14 +181,14 @@ reflect(int i, int n)
       out[(n - 1) / 2 * s] = scaleL(in[(n - 1) * s]); \
   }
 
-#define UNSCALE_UNPACK_SHREX(scaleL, scaleH, s, shrex)       \
-  for (i = 0; i < even_n; i += 2) {                   \
-      int th = scaleH(in[(i + h) / 2 * s]);           \
-      out[(i + 0) * s] = scaleL(in[(i + 0) / 2 * s]); \
-      out[(i + 1) * s] = th + DSV_SAR(th, shrex); \
-  }                                                   \
-  if (n & 1) {                                        \
-      out[(n - 1) * s] = scaleL(in[(n - 1) / 2 * s]); \
+#define UNSCALE_UNPACK_SHREX(scaleL, scaleH, s, shrex)  \
+  for (i = 0; i < even_n; i += 2) {                     \
+      DSV_SBC th = scaleH(in[(i + h) / 2 * s]);         \
+      out[(i + 0) * s] = scaleL(in[(i + 0) / 2 * s]);   \
+      out[(i + 1) * s] = th + DSV_SAR(th, shrex);       \
+  }                                                     \
+  if (n & 1) {                                          \
+      out[(n - 1) * s] = scaleL(in[(n - 1) / 2 * s]);   \
   }
 
 /* simple 3 tap low/high pass filters */
