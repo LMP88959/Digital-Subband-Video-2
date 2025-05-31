@@ -543,8 +543,8 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
 extern void
 dsv_encode_plane(DSV_BS *bs, DSV_COEFS *src, int q, DSV_FMETA *fm)
 {
-    int LL, startp, endp, w, h;
-    DSV_SBC *d = src->data;
+    int startp, endp, w, h;
+    DSV_SBC LL, *d = src->data;
 
     w = src->width;
     h = src->height;
@@ -574,7 +574,7 @@ dsv_encode_plane(DSV_BS *bs, DSV_COEFS *src, int q, DSV_FMETA *fm)
 extern int
 dsv_decode_plane(DSV_BS *bs, DSV_COEFS *dst, int q, DSV_FMETA *fm)
 {
-    int LL, success = 1;
+    int success = 1;
     unsigned plen;
 
     dsv_bs_align(bs);
@@ -583,6 +583,7 @@ dsv_decode_plane(DSV_BS *bs, DSV_COEFS *dst, int q, DSV_FMETA *fm)
 
     dsv_bs_align(bs);
     if (plen > 0 && plen < (dst->width * dst->height * sizeof(DSV_SBC) * 2)) {
+        DSV_SBC LL;
         unsigned start = dsv_bs_ptr(bs);
 
         LL = dsv_bs_get_seg(bs);
