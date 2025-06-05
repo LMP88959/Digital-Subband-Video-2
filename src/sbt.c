@@ -26,7 +26,7 @@
 #define L1_CONDITION   (IS_LUMA  && !IS_P && (l == 1))
 
 /* overflow safety */
-#define OVF_SAFETY_CONDITION (l >= 6 && !fm->params->lossless)
+#define OVF_SAFETY_CONDITION (l >= 6 && l >= (lvls - 3) && !fm->params->lossless)
 
 #define DO_SHREX 1 /* shrink-expand */
 #define SHREX4I 3
