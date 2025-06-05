@@ -1269,8 +1269,10 @@ dsv_enc(DSV_ENCODER *enc, DSV_FRAME *frame, DSV_BUF *bufs)
         encode_metadata(enc, &metabuf);
         /* send metadata first, then compressed frame */
         bufs[nbuf++] = metabuf;
+        set_link_offsets(enc, &bufs[nbuf - 1], 0);
     }
     bufs[nbuf++] = outbuf;
+    set_link_offsets(enc, &bufs[nbuf - 1], 0);
 
     if (d->params.has_ref) {
         enc->refresh_ctr++; /* for averaging stable blocks */
@@ -1297,6 +1299,5 @@ dsv_enc(DSV_ENCODER *enc, DSV_FRAME *frame, DSV_BUF *bufs)
 
     encdat_unref(enc, d);
 
-    set_link_offsets(enc, &bufs[nbuf - 1], 0);
     return nbuf;
 }
