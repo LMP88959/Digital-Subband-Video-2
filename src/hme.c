@@ -1051,8 +1051,8 @@ subpixel_ME(
             if (!hpel && params->effort < 8) { /* skip qpel at low effort */
                 continue;
             }
-            t[0] = testv[n >> 1][0] << hpel;
-            t[1] = testv[n >> 1][1] << hpel;
+            t[0] = testv[n >> 1][0] * (1 << hpel);
+            t[1] = testv[n >> 1][1] * (1 << hpel);
         }
         score = qpsad(srcsp.data, srcsp.stride, imq + t[0] + t[1] * QP_STRIDE);
         evx = MK_MV_COMP(mv->u.mv.x, 0, t[0]);
