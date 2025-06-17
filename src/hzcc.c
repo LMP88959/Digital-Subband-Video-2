@@ -158,48 +158,49 @@ hfquant(DSV_FMETA *fm, int q, int s, int l)
     return MAX(q, MINQUANT);
 }
 
-#define TMQ4POS_P(tmq, flags)                                        \
-    if ((flags) & (DSV_IS_EPRM | DSV_IS_STABLE | DSV_IS_INTRA)) {    \
-        tmq = (tmq) * 3 >> 2;                                        \
+#define TMQ4POS_P(tmq, flags)                                     \
+    if (parc || (((flags) & (DSV_IS_STABLE | DSV_IS_EPRM)))) {    \
+        tmq = (tmq) * 7 >> 3;                                     \
+    } else if (!parc && ((flags) & DSV_IS_INTRA)) {               \
+        tmq = (tmq) * 6 >> 3;                                     \
     }
 
-#define TMQ4POS_I(tmq, flags, l)                                     \
-    switch (l) {                                                     \
-        case MAXLVL - 3:                                             \
-            break;                                                   \
-        default:                                                     \
-        case MAXLVL - 2:                                             \
-            switch ((flags) & (DSV_IS_STABLE | DSV_IS_MAINTAIN)) {   \
-                case DSV_IS_STABLE:                                  \
-                    tmq /= 3;                                        \
-                    break;                                           \
-                case DSV_IS_MAINTAIN:                                \
-                    tmq /= (((flags) & DSV_IS_RINGING) ? 6 : 3);     \
-                    break;                                           \
-                case DSV_IS_MAINTAIN | DSV_IS_STABLE:                \
-                    tmq >>= 2;                                       \
-                    break;                                           \
-                default:                                             \
-                    break;                                           \
-            }                                                        \
-            break;                                                   \
-        case MAXLVL - 1:                                             \
-            switch ((flags) & (DSV_IS_STABLE | DSV_IS_MAINTAIN)) {   \
-                case DSV_IS_STABLE:                                  \
-                    tmq >>= 2;                                       \
-                    break;                                           \
-                case DSV_IS_MAINTAIN:                                \
-                    tmq >>= (((flags) & DSV_IS_RINGING) ? 2 : 1);    \
-                    break;                                           \
-                case DSV_IS_MAINTAIN | DSV_IS_STABLE:                \
-                    tmq >>= 2;                                       \
-                    break;                                           \
-                default:                                             \
-                    break;                                           \
-            }                                                        \
-            break;                                                   \
-    }
-
+#define TMQ4POS_I(tmq, flags, l)                                         \
+        switch (l) {                                                     \
+            case MAXLVL - 3:                                             \
+                break;                                                   \
+            default:                                                     \
+            case MAXLVL - 2:                                             \
+                switch ((flags) & (DSV_IS_STABLE | DSV_IS_MAINTAIN)) {   \
+                    case DSV_IS_STABLE:                                  \
+                        tmq /= 3;                                        \
+                        break;                                           \
+                    case DSV_IS_MAINTAIN:                                \
+                        tmq >>= (((flags) & DSV_IS_RINGING) ? 2 : !parc);\
+                        break;                                           \
+                    case DSV_IS_MAINTAIN | DSV_IS_STABLE:                \
+                        tmq >>= 2;                                       \
+                        break;                                           \
+                    default:                                             \
+                        break;                                           \
+                }                                                        \
+                break;                                                   \
+            case MAXLVL - 1:                                             \
+                switch ((flags) & (DSV_IS_STABLE | DSV_IS_MAINTAIN)) {   \
+                    case DSV_IS_STABLE:                                  \
+                        tmq >>= 2;                                       \
+                        break;                                           \
+                    case DSV_IS_MAINTAIN:                                \
+                        tmq >>= (((flags) & DSV_IS_RINGING) ? 2 : !parc);\
+                        break;                                           \
+                    case DSV_IS_MAINTAIN | DSV_IS_STABLE:                \
+                        tmq >>= 2 + !parc;                               \
+                        break;                                           \
+                    default:                                             \
+                        break;                                           \
+                }                                                        \
+                break;                                                   \
+        }
 
 
 #define quantSUB(v, q, sub) ((((v) >= 0 ? (v) - (sub) : (v) + (sub)) / (q)))
@@ -235,6 +236,10 @@ dequantD(int v, unsigned q)
     return (v * q) + ((v < 0) ? -(q / 2) : (q / 2));
 }
 
+#define DAMP (3 + l)
+#define PUTV(bs, v)  (dsv_bs_put_nrice(bs, v, &vk, DAMP))
+#define GETV(bs)     (dsv_bs_get_nrice(bs, &vk, DAMP))
+
 static void
 hzcc_enc(DSV_BS *bs, DSV_SBC *src, int w, int h, int q, DSV_FMETA *fm)
 {
@@ -248,6 +253,7 @@ hzcc_enc(DSV_BS *bs, DSV_SBC *src, int w, int h, int q, DSV_FMETA *fm)
     DSV_SBC *srcp;
     int startp, endp;
     int isP;
+    int vk = 0;
 
     dsv_bs_align(bs);
     startp = dsv_bs_ptr(bs);
@@ -295,7 +301,7 @@ hzcc_enc(DSV_BS *bs, DSV_SBC *src, int w, int h, int q, DSV_FMETA *fm)
                         v = srcp[x];
                         if (v) {
                             dsv_bs_put_ueg(bs, run);
-                            dsv_bs_put_neg(bs, v);
+                            PUTV(bs, v);
                             run = -1;
                             nruns++;
                         } else {
@@ -325,7 +331,6 @@ hzcc_enc(DSV_BS *bs, DSV_SBC *src, int w, int h, int q, DSV_FMETA *fm)
             }
             srcp += w;
         }
-
         for (l = 0; l < MAXLVL; l++) {
             uint8_t *blockrow;
             DSV_SBC *parent;
@@ -354,6 +359,7 @@ hzcc_enc(DSV_BS *bs, DSV_SBC *src, int w, int h, int q, DSV_FMETA *fm)
                     for (x = 0; x < sw; x++) {
                         int tmq = qp;
                         int flags = blockrow[bx >> DSV_BLOCK_INTERP_P];
+                        int parc = parent[x >> 1];
                         if (isP) {
                             TMQ4POS_P(tmq, flags);
                             if (psyluma && (flags & DSV_IS_SIMCMPLX)) {
@@ -367,7 +373,6 @@ hzcc_enc(DSV_BS *bs, DSV_SBC *src, int w, int h, int q, DSV_FMETA *fm)
                             if (psyluma && !(flags & DSV_IS_STABLE)) {
                                 v = 0;
                                 if (srcp[x]) {
-                                    int parc = parent[x >> 1];
                                     if (parc) {
                                         int absrc, tm;
 
@@ -387,7 +392,7 @@ hzcc_enc(DSV_BS *bs, DSV_SBC *src, int w, int h, int q, DSV_FMETA *fm)
                         if (v) {
                             srcp[x] = dequantH(v, tmq);
                             dsv_bs_put_ueg(bs, run);
-                            dsv_bs_put_neg(bs, v);
+                            PUTV(bs, v);
                             run = -1;
                             nruns++;
                         } else {
@@ -425,6 +430,7 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
     int w = dst->width;
     int h = dst->height;
     int isP;
+    int vk = 0;
 
     dsv_bs_align(bs);
     runs = dsv_bs_get_bits(bs, RUN_BITS);
@@ -468,7 +474,7 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
                 for (y = 0; y < sh; y++) {
                     for (x = 0; x < sw; x++) {
                         if (!run--) {
-                            v = dsv_bs_get_neg(bs);
+                            v = GETV(bs);
                             run = (runs-- > 0) ? dsv_bs_get_ueg(bs) : INT_MAX;
                             if (dsv_bs_ptr(bs) >= bufsz) {
                                 return;
@@ -497,6 +503,7 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
         }
         for (l = 0; l < MAXLVL; l++) {
             uint8_t *blockrow;
+            DSV_SBC *parent;
 
             sw = dimat(l, w);
             sh = dimat(l, h);
@@ -505,6 +512,8 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
             qp = q;
             /* C.2.4 Higher Level Subband Dequantization */
             for (s = 1; s < NSUBBAND; s++) {
+                int par;
+                par = subband(l - 1, s, w, h);
                 o = subband(l, s, w, h);
                 qp = hfquant(fm, q, s, l);
 
@@ -513,11 +522,13 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
                 for (y = 0; y < sh; y++) {
                     bx = 0;
                     blockrow = fm->blockdata + (by >> DSV_BLOCK_INTERP_P) * fm->params->nblocks_h;
+                    parent = out + par + ((y >> 1) * w);
                     for (x = 0; x < sw; x++) {
                         if (!run--) {
                             int tmq = qp;
                             int flags = blockrow[bx >> DSV_BLOCK_INTERP_P];
-                            v = dsv_bs_get_neg(bs);
+                            int parc = parent[x >> 1];
+                            v = GETV(bs);
                             run = (runs-- > 0) ? dsv_bs_get_ueg(bs) : INT_MAX;
                             if (dsv_bs_ptr(bs) >= bufsz) {
                                 return;

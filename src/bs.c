@@ -19,117 +19,117 @@
 /* B. Bitstream */
 
 extern void
-dsv_bs_init(DSV_BS *s, uint8_t *buffer)
+dsv_bs_init(DSV_BS *bs, uint8_t *buffer)
 {
-    s->start = buffer;
-    s->pos = 0;
+    bs->start = buffer;
+    bs->pos = 0;
 }
 
 extern void
-dsv_bs_align(DSV_BS *s)
+dsv_bs_align(DSV_BS *bs)
 {
-    if (dsv_bs_aligned(s)) {
+    if (dsv_bs_aligned(bs)) {
         return; /* already aligned */
     }
-    s->pos = ((s->pos + 7) & ((unsigned) (~0) << 3)); /* byte align */
+    bs->pos = ((bs->pos + 7) & ((unsigned) (~0) << 3)); /* byte align */
 }
 
 extern void
-dsv_bs_concat(DSV_BS *s, uint8_t *data, int len)
+dsv_bs_concat(DSV_BS *bs, uint8_t *data, int len)
 {
-    if (!dsv_bs_aligned(s)) {
+    if (!dsv_bs_aligned(bs)) {
         DSV_ERROR(("concat to unaligned bs"));
     }
     if (len == 0) {
         return;
     }
-    memcpy(s->start + dsv_bs_ptr(s), data, len);
-    s->pos += len * 8;
+    memcpy(bs->start + dsv_bs_ptr(bs), data, len);
+    bs->pos += len * 8;
 }
 
 /* static versions to possibly make the compiler more likely to inline */
 static void
-local_put_bit(DSV_BS *s, int v)
+local_put_bit(DSV_BS *bs, int v)
 {
     if (v) {
-        s->start[dsv_bs_ptr(s)] |= 1 << (7 - (s->pos & 7));
+        bs->start[dsv_bs_ptr(bs)] |= 1 << (7 - (bs->pos & 7));
     }
-    s->pos++;
+    bs->pos++;
 }
 
 static void
-local_put_one(DSV_BS *s)
+local_put_one(DSV_BS *bs)
 {
-    s->start[dsv_bs_ptr(s)] |= 1 << (7 - (s->pos & 7));
-    s->pos++;
+    bs->start[dsv_bs_ptr(bs)] |= 1 << (7 - (bs->pos & 7));
+    bs->pos++;
 }
 
 static unsigned
-local_get_bit(DSV_BS *s)
+local_get_bit(DSV_BS *bs)
 {
     unsigned out;
 
-    out = s->start[dsv_bs_ptr(s)] >> (7 - (s->pos & 7));
-    s->pos++;
+    out = bs->start[dsv_bs_ptr(bs)] >> (7 - (bs->pos & 7));
+    bs->pos++;
 
     return out & 1;
 }
 
 static void
-local_put_bits(DSV_BS *s, unsigned n, unsigned v)
+local_put_bits(DSV_BS *bs, unsigned n, unsigned v)
 {
     unsigned rem, bit;
     uint8_t data;
 
     while (n > 0) {
-        rem = 8 - (s->pos & 7);
+        rem = 8 - (bs->pos & 7);
         rem = MIN(n, rem);
-        bit = (7 - (s->pos & 7)) - rem + 1;
+        bit = (7 - (bs->pos & 7)) - rem + 1;
         data = (v >> (n - rem)) & ((1 << rem) - 1);
-        s->start[dsv_bs_ptr(s)] |= data << bit;
+        bs->start[dsv_bs_ptr(bs)] |= data << bit;
         n -= rem;
-        s->pos += rem;
+        bs->pos += rem;
     }
 }
 
 extern void
-dsv_bs_put_bit(DSV_BS *s, int v)
+dsv_bs_put_bit(DSV_BS *bs, int v)
 {
-    local_put_bit(s, v);
+    local_put_bit(bs, v);
 }
 
 extern unsigned
-dsv_bs_get_bit(DSV_BS *s)
+dsv_bs_get_bit(DSV_BS *bs)
 {
-    return local_get_bit(s);
+    return local_get_bit(bs);
 }
 
 extern void
-dsv_bs_put_bits(DSV_BS *s, unsigned n, unsigned v)
+dsv_bs_put_bits(DSV_BS *bs, unsigned n, unsigned v)
 {
-    local_put_bits(s, n, v);
+    local_put_bits(bs, n, v);
 }
 
 extern unsigned
-dsv_bs_get_bits(DSV_BS *s, unsigned n)
+dsv_bs_get_bits(DSV_BS *bs, unsigned n)
 {
     unsigned rem, bit, out = 0;
 
     while (n > 0) {
-        rem = 8 - (s->pos & 7);
+        rem = 8 - (bs->pos & 7);
         rem = MIN(n, rem);
-        bit = (7 - (s->pos & 7)) - rem + 1;
+        bit = (7 - (bs->pos & 7)) - rem + 1;
         out <<= rem;
-        out |= (s->start[dsv_bs_ptr(s)] & (((1 << rem) - 1) << bit)) >> bit;
+        out |= (bs->start[dsv_bs_ptr(bs)] & (((1 << rem) - 1) << bit)) >> bit;
         n -= rem;
-        s->pos += rem;
+        bs->pos += rem;
     }
     return out;
 }
 
 /* B. Encoding Type: unsigned interleaved exp-Golomb code (UEG) */
 extern void
-dsv_bs_put_ueg(DSV_BS *s, unsigned v)
+dsv_bs_put_ueg(DSV_BS *bs, unsigned v)
 {
     int i, n_bits;
     unsigned x;
@@ -140,22 +140,36 @@ dsv_bs_put_ueg(DSV_BS *s, unsigned v)
         x >>= 1;
     }
     for (i = 0; i < n_bits; i++) {
-        s->pos++; /* equivalent to putting a zero, assuming buffer was clear */
-        local_put_bit(s, v & (1 << (n_bits - 1 - i)));
+        bs->pos++; /* equivalent to putting a zero, assuming buffer was clear */
+        local_put_bit(bs, v & (1 << (n_bits - 1 - i)));
     }
-    local_put_one(s);
+    local_put_one(bs);
 }
 
 /* B. Encoding Type: unsigned interleaved exp-Golomb code (UEG) */
 extern unsigned
-dsv_bs_get_ueg(DSV_BS *s)
+dsv_bs_get_ueg(DSV_BS *bs)
 {
     unsigned v = 1;
 
-    while (!local_get_bit(s)) {
-        v = (v << 1) | local_get_bit(s);
+    while (!local_get_bit(bs)) {
+        v = (v << 1) | local_get_bit(bs);
     }
     return v - 1;
+}
+
+static unsigned
+s2u(int v)
+{
+    int uv = -2 * v - 1;
+    return (unsigned) (uv ^ (uv >> (sizeof(int) * CHAR_BIT - 1)));
+}
+
+static int
+u2s(unsigned uv)
+{
+    int v = (int) (uv + (unsigned) 1);
+    return v & 1 ? v >> 1 : -(v >> 1);
 }
 
 /* B. Encoding Type: signed interleaved exp-Golomb code (SEG) */
@@ -178,12 +192,12 @@ dsv_bs_put_seg(DSV_BS *bs, int v)
 
 /* B. Encoding Type: signed interleaved exp-Golomb code (SEG) */
 extern int
-dsv_bs_get_seg(DSV_BS *s)
+dsv_bs_get_seg(DSV_BS *bs)
 {
     int v;
 
-    v = dsv_bs_get_ueg(s);
-    if (v && local_get_bit(s)) {
+    v = dsv_bs_get_ueg(bs);
+    if (v && local_get_bit(bs)) {
         return -v;
     }
     return v;
@@ -218,6 +232,51 @@ dsv_bs_get_neg(DSV_BS *bs)
         return -v;
     }
     return v;
+}
+
+extern unsigned
+dsv_bs_get_rice(DSV_BS *bs, int *rk, int damp)
+{
+    int k = (*rk) >> damp;
+    unsigned q = 0;
+    while (!local_get_bit(bs)) {
+        q++;
+    }
+    if (q) {
+        (*rk)++;
+    } else if ((*rk) > 0) {
+        (*rk)--;
+    }
+    return (q << k) | dsv_bs_get_bits(bs, k);
+}
+
+extern void
+dsv_bs_put_rice(DSV_BS *bs, unsigned v, int *rk, int damp)
+{
+    unsigned k, q;
+
+    k = (*rk) >> damp;
+    q = v >> k;
+    if (q) {
+        (*rk)++;
+    } else if ((*rk) > 0) {
+        (*rk)--;
+    }
+    bs->pos += q; /* equivalent to putting 'q' zeroes, assuming buffer was clear */
+    local_put_one(bs);
+    local_put_bits(bs, k, v);
+}
+
+extern void
+dsv_bs_put_nrice(DSV_BS *bs, int v, int *rk, int damp)
+{
+    dsv_bs_put_rice(bs, s2u(v) - 1, rk, damp);
+}
+
+extern int
+dsv_bs_get_nrice(DSV_BS *bs, int *rk, int damp)
+{
+    return u2s(dsv_bs_get_rice(bs, rk, damp) + 1);
 }
 
 /* B. Encoding Format: Zero Bit Run-Length Encoding (ZBRLE) */
