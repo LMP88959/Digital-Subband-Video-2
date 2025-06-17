@@ -234,22 +234,6 @@ dsv_bs_get_neg(DSV_BS *bs)
     return v;
 }
 
-extern unsigned
-dsv_bs_get_rice(DSV_BS *bs, int *rk, int damp)
-{
-    int k = (*rk) >> damp;
-    unsigned q = 0;
-    while (!local_get_bit(bs)) {
-        q++;
-    }
-    if (q) {
-        (*rk)++;
-    } else if ((*rk) > 0) {
-        (*rk)--;
-    }
-    return (q << k) | dsv_bs_get_bits(bs, k);
-}
-
 extern void
 dsv_bs_put_rice(DSV_BS *bs, unsigned v, int *rk, int damp)
 {
@@ -265,6 +249,22 @@ dsv_bs_put_rice(DSV_BS *bs, unsigned v, int *rk, int damp)
     bs->pos += q; /* equivalent to putting 'q' zeroes, assuming buffer was clear */
     local_put_one(bs);
     local_put_bits(bs, k, v);
+}
+
+extern unsigned
+dsv_bs_get_rice(DSV_BS *bs, int *rk, int damp)
+{
+    int k = (*rk) >> damp;
+    unsigned q = 0;
+    while (!local_get_bit(bs)) {
+        q++;
+    }
+    if (q) {
+        (*rk)++;
+    } else if ((*rk) > 0) {
+        (*rk)--;
+    }
+    return (q << k) | dsv_bs_get_bits(bs, k);
 }
 
 extern void
