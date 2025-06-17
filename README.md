@@ -8,17 +8,23 @@ Comparable to MPEG-4 Part 2 and Part 10 (H.264) (P frames only) in terms of effi
 ------
 ## Example comparison (More can be found at the bottom of the README):
 
+Stefan CIF
 minih264:
 
 
-https://github.com/user-attachments/assets/ee54487a-dfb5-4b75-9557-ba6b66a98d59
+
+https://github.com/user-attachments/assets/a309edb4-3866-4220-9c6b-61ced3acbbcd
+
+
 
 
 DSV2:
 
 
 
-https://github.com/user-attachments/assets/ac400dd8-dc3e-4749-9503-9da1319ab870
+
+https://github.com/user-attachments/assets/f6cbf927-3e2a-4078-a086-e5fb47ea66ab
+
 
 
 
@@ -125,7 +131,7 @@ Now, you should be all set to use the compiled `dsv2` binary.
 
 Sample output:
 ```
-Envel Graphics DSV v2.7 codec by EMMIR 2024-2025. encoder v10. decoder v2.
+Envel Graphics DSV v2.8 codec by EMMIR 2024-2025. encoder v10. decoder v2. build 0
 usage: ./dsv2 e [options]
 sample usage: ./dsv2 e -inp=video.yuv -out=compressed.dsv -w=352 -h=288 -fps_num=24 -fps_den=1 -qp=85 -gop=15
 ------------------------------------------------------------
@@ -295,7 +301,7 @@ sample usage: ./dsv2 e -inp=video.yuv -out=compressed.dsv -w=352 -h=288 -fps_num
 
 Sample output:
 ```
-Envel Graphics DSV v2.7 codec by EMMIR 2024-2025. encoder v10. decoder v2.
+Envel Graphics DSV v2.8 codec by EMMIR 2024-2025. encoder v10. decoder v2. build 0
 usage: ./dsv2 d [options]
 sample usage: ./dsv2 d -inp=video.dsv -out=decompressed.yuv -out420p=1
 ------------------------------------------------------------
@@ -345,8 +351,9 @@ All videos are encoded at 30fps with a GOP length of 12.
 The H.264 file sizes were within a few kilobytes of their respective DSV2 file size.
 H.264 examples were encoded using https://github.com/lieff/minih264 using -speed0 (best quality)
 DSV2 examples were encoded with -effort=10 (best quality)
+------
 
-
+Husky CIF
 minih264:
 
 
@@ -356,12 +363,14 @@ https://github.com/user-attachments/assets/2ddb2d57-fe48-4cef-b755-42230393c6e9
 DSV2:
 
 
-https://github.com/user-attachments/assets/177a5da0-dbf6-43fd-90bc-7f98f5c9822e
+
+https://github.com/user-attachments/assets/4a93cc8e-0618-4993-9efb-f2a121a75aed
 
 
 
+------
 
-
+Mobile CIF
 minih264:
 
 
@@ -371,12 +380,14 @@ DSV2:
 
 
 
-https://github.com/user-attachments/assets/51721ea9-8666-4c6b-931d-7fd26a870476
+
+https://github.com/user-attachments/assets/27bf1e6a-3668-4d5c-a66c-a9ea7c7c822d
 
 
 
 
 ------
+Bus CIF
 
 minih264:
 
@@ -386,6 +397,6 @@ https://github.com/user-attachments/assets/f3930a65-db02-47d7-a2ac-f2c73c5bae80
 DSV2:
 
 
+https://github.com/user-attachments/assets/86805c29-011a-4cb7-bc03-105616e183cf
 
-https://github.com/user-attachments/assets/56f7a1f2-81cf-4d1a-9508-c95151e5b85a
 
