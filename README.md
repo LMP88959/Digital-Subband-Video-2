@@ -347,7 +347,7 @@ itch.io: https://kingscrook.itch.io/kings-crook
 ------
 ## Example videos:
 
-All videos are encoded at 30fps with a GOP length of 12.
+All videos are encoded at 29.97fps with a GOP length of 12.
 The H.264 file sizes were within a few kilobytes of their respective DSV2 file size.
 H.264 examples were encoded using https://github.com/lieff/minih264 using -speed0 (best quality)
 DSV2 examples were encoded with -effort=10 (best quality)
