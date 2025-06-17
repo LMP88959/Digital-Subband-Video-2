@@ -87,6 +87,11 @@ extern int dsv_bs_end_rle(DSV_ZBRLE *rle, int read);
 extern void dsv_bs_put_rle(DSV_ZBRLE *rle, int b);
 extern int dsv_bs_get_rle(DSV_ZBRLE *rle);
 
+extern unsigned dsv_bs_get_rice(DSV_BS *bs, int *rk, int damp);
+extern void dsv_bs_put_rice(DSV_BS *bs, unsigned x, int *rk, int damp);
+extern void dsv_bs_put_nrice(DSV_BS *bs, int v, int *rk, int damp);
+extern int dsv_bs_get_nrice(DSV_BS *bs, int *rk, int damp);
+
 #define DSV_STABLE_BIT   0
 #define DSV_MAINTAIN_BIT 1
 #define DSV_SKIP_BIT     2
