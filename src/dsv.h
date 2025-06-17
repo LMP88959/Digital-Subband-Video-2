@@ -41,7 +41,7 @@ extern "C" {
 #define DSV_PT_EOS  0x10
 #define DSV_MAKE_PT(is_ref, has_ref) (DSV_PT_PIC | ((is_ref) << 1) | (has_ref))
 
-#define DSV_PT_IS_PIC(x)   ((x) & 0x4)
+#define DSV_PT_IS_PIC(x)   ((x) & DSV_PT_PIC)
 #define DSV_PT_IS_REF(x)  (((x) & 0x6) == 0x6)
 #define DSV_PT_HAS_REF(x)  ((x) & 0x1)
 
