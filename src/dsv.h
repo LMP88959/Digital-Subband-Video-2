@@ -32,8 +32,8 @@ extern "C" {
 #define DSV_FOURCC_1     'S'
 #define DSV_FOURCC_2     'V'
 #define DSV_FOURCC_3     '2'
-#define DSV_VERSION_MINOR 7
-#define DSV_VERSION_BUILD 4
+#define DSV_VERSION_MINOR 8
+#define DSV_VERSION_BUILD 0
 
 /* B.1.1 Packet Type */
 #define DSV_PT_META 0x00
@@ -41,7 +41,7 @@ extern "C" {
 #define DSV_PT_EOS  0x10
 #define DSV_MAKE_PT(is_ref, has_ref) (DSV_PT_PIC | ((is_ref) << 1) | (has_ref))
 
-#define DSV_PT_IS_PIC(x)   ((x) & DSV_PT_PIC)
+#define DSV_PT_IS_PIC(x)   ((x) & 0x4)
 #define DSV_PT_IS_REF(x)  (((x) & 0x6) == 0x6)
 #define DSV_PT_HAS_REF(x)  ((x) & 0x1)
 
