@@ -234,6 +234,7 @@ dsv_bs_get_neg(DSV_BS *bs)
     return v;
 }
 
+/* B. Encoding Type: adaptive Rice code (URC) */
 extern void
 dsv_bs_put_rice(DSV_BS *bs, unsigned v, int *rk, int damp)
 {
@@ -251,6 +252,7 @@ dsv_bs_put_rice(DSV_BS *bs, unsigned v, int *rk, int damp)
     local_put_bits(bs, k, v);
 }
 
+/* B. Encoding Type: adaptive Rice code (URC) */
 extern unsigned
 dsv_bs_get_rice(DSV_BS *bs, int *rk, int damp)
 {
@@ -267,12 +269,14 @@ dsv_bs_get_rice(DSV_BS *bs, int *rk, int damp)
     return (q << k) | dsv_bs_get_bits(bs, k);
 }
 
+/* B. Encoding Type: non-zero adaptive Rice code (NRC) */
 extern void
 dsv_bs_put_nrice(DSV_BS *bs, int v, int *rk, int damp)
 {
     dsv_bs_put_rice(bs, s2u(v) - 1, rk, damp);
 }
 
+/* B. Encoding Type: non-zero adaptive Rice code (NRC) */
 extern int
 dsv_bs_get_nrice(DSV_BS *bs, int *rk, int damp)
 {
