@@ -45,7 +45,6 @@ https://github.com/user-attachments/assets/f6cbf927-3e2a-4078-a086-e5fb47ea66ab
 - lossless coding support
 - intra and inter frames with variable length closed GOP
    - no bidirectional prediction (also known as B-frames). Only forward prediction with previous picture as reference
-- only form of entropy coding is interleaved exponential-golomb coding for simplicity
 
 ## Improvements and New Features since DSV1
 
