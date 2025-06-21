@@ -70,6 +70,11 @@ decode_meta(DSV_DECODER *d, DSV_BS *bs)
 
     fmt->inter_sharpen = dsv_bs_get_ueg(bs);
     DSV_DEBUG(("inter sharpen %d", fmt->inter_sharpen));
+    if (dsv_bs_get_bit(bs)) {
+        fmt->reserved = dsv_bs_get_bits(bs, 15);
+    } else {
+        fmt->reserved = 0;
+    }
 }
 
 /* B.2.3.4 Motion Data */
@@ -481,8 +486,14 @@ dsv_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
     do_filter = dsv_bs_get_bit(&bs);
     quant = dsv_bs_get_bits(&bs, DSV_MAX_QP_BITS);
     p->lossless = (quant == 1);
-    /* read frame metadata (stability / skip, motion data / adaptive quant) */
     dsv_bs_align(&bs);
+    if (dsv_bs_get_bit(&bs)) {
+        p->reserved = dsv_bs_get_bits(&bs, 15);
+    } else {
+        p->reserved = 0;
+    }
+    dsv_bs_align(&bs);
+    /* read frame metadata (stability / skip, motion data / adaptive quant) */
     img->blockdata = dsv_alloc(p->nblocks_h * p->nblocks_v);
     decode_stability_blocks(img, &bs, buffer, p->has_ref, stats);
     if (p->has_ref) {
