@@ -132,7 +132,7 @@ Now, you should be all set to use the compiled `dsv2` binary.
 
 Sample output:
 ```
-Envel Graphics DSV v2.8 codec by EMMIR 2024-2025. encoder v10. decoder v2. build 0
+Envel Graphics DSV v2.8 codec by EMMIR 2024-2025. encoder v10. decoder v2. build 1
 usage: ./dsv2 e [options]
 sample usage: ./dsv2 e -inp=video.yuv -out=compressed.dsv -w=352 -h=288 -fps_num=24 -fps_den=1 -qp=85 -gop=15
 ------------------------------------------------------------
@@ -302,7 +302,7 @@ sample usage: ./dsv2 e -inp=video.yuv -out=compressed.dsv -w=352 -h=288 -fps_num
 
 Sample output:
 ```
-Envel Graphics DSV v2.8 codec by EMMIR 2024-2025. encoder v10. decoder v2. build 0
+Envel Graphics DSV v2.8 codec by EMMIR 2024-2025. encoder v10. decoder v2. build 1
 usage: ./dsv2 d [options]
 sample usage: ./dsv2 d -inp=video.dsv -out=decompressed.yuv -out420p=1
 ------------------------------------------------------------
