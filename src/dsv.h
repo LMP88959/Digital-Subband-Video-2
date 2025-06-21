@@ -33,7 +33,7 @@ extern "C" {
 #define DSV_FOURCC_2     'V'
 #define DSV_FOURCC_3     '2'
 #define DSV_VERSION_MINOR 8
-#define DSV_VERSION_BUILD 0
+#define DSV_VERSION_BUILD 1
 
 /* B.1.1 Packet Type */
 #define DSV_PT_META 0x00
@@ -108,6 +108,12 @@ typedef struct {
     int aspect_den;
 
     int inter_sharpen;
+
+    /* 16 bits: reserved for potential future use
+     * 1st bit: 0 = no reserved bits, 1 = has reserved bits
+     * last 15 bits: reserved bits
+     */
+    int reserved;
 } DSV_META;
 
 typedef struct {
@@ -249,6 +255,14 @@ typedef struct {
 
     int temporal_mc; /* temporal motion compensation state */
     int lossless;
+
+    /* 16 bits: reserved for potential future use
+     * (different from metadata->reserved as this is per-frame)
+     *
+     * 1st bit: 0 = no reserved bits, 1 = has reserved bits
+     * last 15 bits: reserved bits
+     */
+    int reserved;
 } DSV_PARAMS;
 
 typedef struct {
