@@ -954,7 +954,6 @@ encode_picture(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_BUF *output_buf)
         dsv_bs_put_bit(&bs, enc->do_intra_filter);
     }
     dsv_bs_put_bits(&bs, DSV_MAX_QP_BITS, d->quant);
-    dsv_bs_align(&bs);
     /* currently per-frame reserved bits are unused and undefined */
     dsv_bs_put_bit(&bs, 0); /* signal no more bits */
     /* dsv_bs_put_bits(&bs, 15, d->params.reserved); */ /* uncomment when reserved bits need to be encoded */
