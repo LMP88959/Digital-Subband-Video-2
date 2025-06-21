@@ -818,6 +818,10 @@ encode_metadata(DSV_ENCODER *enc, DSV_BUF *buf)
     dsv_bs_put_ueg(&bs, meta->aspect_den);
 
     dsv_bs_put_ueg(&bs, meta->inter_sharpen);
+
+    /* currently reserved bits are unused and undefined */
+    dsv_bs_put_bit(&bs, 0); /* signal no more bits */
+    /* dsv_bs_put_bits(&bs, 15, reserved); */ /* uncomment when reserved bits need to be encoded */
     dsv_bs_align(&bs);
 
     next_link = dsv_bs_ptr(&bs);
@@ -950,6 +954,10 @@ encode_picture(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_BUF *output_buf)
         dsv_bs_put_bit(&bs, enc->do_intra_filter);
     }
     dsv_bs_put_bits(&bs, DSV_MAX_QP_BITS, d->quant);
+    dsv_bs_align(&bs);
+    /* currently per-frame reserved bits are unused and undefined */
+    dsv_bs_put_bit(&bs, 0); /* signal no more bits */
+    /* dsv_bs_put_bits(&bs, 15, d->params.reserved); */ /* uncomment when reserved bits need to be encoded */
     dsv_bs_align(&bs);
 
     /* encode AQ metadata */
