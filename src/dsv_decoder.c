@@ -486,7 +486,6 @@ dsv_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
     do_filter = dsv_bs_get_bit(&bs);
     quant = dsv_bs_get_bits(&bs, DSV_MAX_QP_BITS);
     p->lossless = (quant == 1);
-    dsv_bs_align(&bs);
     if (dsv_bs_get_bit(&bs)) {
         p->reserved = dsv_bs_get_bits(&bs, 15);
     } else {
