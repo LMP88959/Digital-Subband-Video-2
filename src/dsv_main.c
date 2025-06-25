@@ -971,13 +971,16 @@ decode(void)
                 if (postsharp) {
                     dsv_post_process(f420->planes + 0);
                 }
-                if (first && as_y4m) {
-                    dsv_y4m_write_hdr(outfile, meta->width, meta->height,
-                           DSV_SUBSAMP_420, meta->fps_num, meta->fps_den,
-                           meta->aspect_num, meta->aspect_den);
-                    first = 0;
+                if (as_y4m) {
+                    if (first) {
+                        dsv_y4m_write_hdr(outfile, meta->width, meta->height,
+                               DSV_SUBSAMP_420, meta->fps_num, meta->fps_den,
+                               meta->aspect_num, meta->aspect_den);
+                        first = 0;
+                    }
+                    dsv_y4m_write_frame_hdr(outfile);
                 }
-                if (dsv_yuv_write(outfile, frameno, f420->planes) < 0) {
+                if (dsv_yuv_write_seq(outfile, f420->planes) < 0) {
                     DSV_ERROR(("failed to write frame (ID %u, actual %u)", frameno, dec_frameno));
                 }
                 dsv_frame_ref_dec(f420);
