@@ -1017,8 +1017,9 @@ decode(void)
     }
     DSV_INFO(("freeing decoder"));
     dsv_dec_free(&dec);
-    dsv_free(meta);
-
+    if (meta) {
+        dsv_free(meta);
+    }
     if (opts.inp[0] != USE_STDIO_CHAR) {
         fclose(inpfile);
     }
