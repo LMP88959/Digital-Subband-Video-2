@@ -1,7 +1,7 @@
 # Digital-Subband-Video-2
 ------
 
-## As of June 20, 2025 the DSV2 bitstream is frozen (v2.8)
+<h2 align="center">As of June 20, 2025 the DSV2 bitstream is frozen (v2.8)</h1>
 <p align="center">
 <img width="300" height="300" src="https://github.com/user-attachments/assets/ec4022d6-c60a-408f-979e-5845086f553a">
 </p>
