@@ -33,7 +33,7 @@ extern "C" {
 #define DSV_FOURCC_2     'V'
 #define DSV_FOURCC_3     '2'
 #define DSV_VERSION_MINOR 8
-#define DSV_VERSION_BUILD 1
+#define DSV_VERSION_BUILD 2
 
 /* B.1.1 Packet Type */
 #define DSV_PT_META 0x00

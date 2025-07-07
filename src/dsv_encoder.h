@@ -23,7 +23,7 @@ extern "C" {
 
 #include "dsv_internal.h"
 
-#define DSV_ENCODER_VERSION 10
+#define DSV_ENCODER_VERSION 11
 
 #define DSV_GOP_INTRA 0
 #define DSV_GOP_INF   INT_MAX
@@ -140,6 +140,7 @@ typedef struct {
     } *stability;
     unsigned refresh_ctr;
     uint8_t *blockdata;
+    uint8_t *intra_map;
 
     DSV_FNUM prev_gop;
     int prev_quant;
