@@ -232,12 +232,14 @@ quality2quant(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_FNUM prev_I)
         }
         anchor = CLAMP(enc->quality, minq, maxq);
         if (d->fnum > 0 && d->params.has_ref) {
+            DSV_META *vfmt = d->params.vidmeta;
             int dist, gop, closeness, qa, step, erradd, errsq;
             dist = abs((int) d->fnum - (int) prev_I);
             /* see how close we are to the previous I frame relative to the gop length */
             gop = CLAMP(enc->gop, 1, 600);
-            errsq = (plexsq + (d->avg_err * d->avg_err >> 2) + 1) >> 1;
-            plexsq = 0;
+            errsq = (d->avg_err * d->avg_err) >> 1;
+            /* scale by gop to fps ratio */
+            plexsq = (plexsq * gop * vfmt->fps_den) / (vfmt->fps_num << 4);
             erradd = CLAMP(errsq, RC_QUAL_PCT(0), RC_QUAL_PCT(16));
             if (dist >= enc->gop / 2) {
                 step = erradd;
@@ -257,7 +259,7 @@ quality2quant(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_FNUM prev_I)
 
         clamped_avg = MAX(enc->rf_avg, enc->quality);
         moving_targ = (3 * anchor + 1 * clamped_avg + 2) >> 2;
-        q = moving_targ + dir * plexsq;
+        q = moving_targ + dir * plexsq / 4;
         DSV_INFO(("    COMPLEXITY: %d%%", enc->curr_complexity));
         DSV_INFO(("    ANCHOR: %d    RF_AVG: %d", anchor, enc->rf_avg));
         DSV_INFO(("      TARGET: %d", moving_targ));
@@ -1103,8 +1105,44 @@ encode_one_frame(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_BUF *output_buf)
         encdat_ref(d);
     }
     d->avg_err = 0;
-    if (d->params.has_ref) {
+
+    if (!d->params.has_ref) {
+        if (!enc->intra_map) {
+            enc->intra_map = dsv_alloc(p->nblocks_h * p->nblocks_v);
+        }
+        memset(enc->intra_map, 0, p->nblocks_h * p->nblocks_v);
+    } else {
+        int j, dist;
+        int nintra = 0;
+        DSV_MV *mv;
+
         forced_intra = motion_est(enc, d);
+        dist = abs((int) d->fnum - (int) prev_I);
+        if (!forced_intra && dist > (enc->gop / 4)) {
+            DSV_ASSERT(enc->intra_map);
+
+            for (j = 0; j < p->nblocks_v; j++) {
+                for (i = 0; i < p->nblocks_h; i++) {
+                    int idx = i + j * p->nblocks_h;
+                    mv = &d->final_mvs[idx];
+                    enc->intra_map[idx] |= (!!DSV_MV_IS_INTRA(mv));
+                    if (enc->intra_map[idx] && (DSV_MV_IS_SKIP(mv) || mv->u.all == 0)) {
+                        nintra++;
+                    }
+                    nintra += enc->intra_map[idx];
+                }
+            }
+            nintra = (nintra * 100) / (p->nblocks_h * p->nblocks_v);
+            if (nintra > enc->intra_pct_thresh) {
+                DSV_ERROR(("too much cumulative intra, inserting I frame %d%%", nintra));
+                p->has_ref = 0;
+                forced_intra = 1;
+            }
+        }
+        /* reset intra map on new intra frame */
+        if (forced_intra) {
+            memset(enc->intra_map, 0, p->nblocks_h * p->nblocks_v);
+        }
     }
     if (enc->variable_i_interval && forced_intra) {
         enc->prev_gop = d->fnum;
