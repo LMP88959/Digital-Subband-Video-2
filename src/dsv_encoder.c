@@ -201,6 +201,7 @@ static void
 quality2quant(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_FNUM prev_I)
 {
     int q;
+    /* please note that this entire function is a mess */
 
     if (d->params.has_ref) {
         DSV_INFO(("P FRAME!"));
@@ -256,7 +257,7 @@ quality2quant(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_FNUM prev_I)
 
             anchor = CLAMP(anchor, minq, maxq);
         }
-
+        /* NOTE: I am aware dark_intra_boost is currently not taken into account in CRF mode... */
         clamped_avg = MAX(enc->rf_avg, enc->quality);
         moving_targ = (3 * anchor + 1 * clamped_avg + 2) >> 2;
         q = moving_targ + dir * plexsq / 4;
@@ -278,7 +279,7 @@ quality2quant(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_FNUM prev_I)
         if (enc->prev_complexity < 0) {
             enc->prev_complexity = enc->curr_complexity;
         }
-        if (enc->rc_mode == DSV_RATE_CONTROL_CRF) {
+        if (enc->rc_mode == DSV_RATE_CONTROL_CRF) { /* remnant of experimental RC mode, unreachable in its current state */
             /* CRF, targeting this quality level */
             target_rf = MAX(enc->quality, 1);
         } else {
@@ -296,7 +297,7 @@ quality2quant(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_FNUM prev_I)
 
         /* limit delta by a different amount depending on direction */
         if (!d->params.has_ref) {
-            if (enc->rc_mode == DSV_RATE_CONTROL_CRF) {
+            if (enc->rc_mode == DSV_RATE_CONTROL_CRF) { /* remnant of experimental RC mode, unreachable in its current state */
                 delta = (abs(rf - target_rf) * RC_QUAL_PCT(50)) / target_rf;
                 if (dir < 0 && delta > RC_QUAL_PCT(2)) {
                     delta = 0;
@@ -337,7 +338,7 @@ quality2quant(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_FNUM prev_I)
             if (dir < 0 && delta < enc->min_q_step) {
                 delta = 0;
             }
-            if (enc->rc_mode == DSV_RATE_CONTROL_CRF) {
+            if (enc->rc_mode == DSV_RATE_CONTROL_CRF) { /* remnant of experimental RC mode, unreachable in its current state */
                 delta = MIN(delta, enc->max_q_step * (dir > 0 ? 4 : 1));
             } else {
                 delta = MIN(delta, enc->max_q_step * (dir > 0 ? 1 : 8));
