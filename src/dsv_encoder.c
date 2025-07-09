@@ -1135,7 +1135,7 @@ encode_one_frame(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_BUF *output_buf)
             }
             nintra = (nintra * 100) / (p->nblocks_h * p->nblocks_v);
             if (nintra > enc->intra_pct_thresh) {
-                DSV_ERROR(("too much cumulative intra, inserting I frame %d%%", nintra));
+                DSV_INFO(("too much cumulative intra, inserting I frame %d%%", nintra));
                 p->has_ref = 0;
                 forced_intra = 1;
             }
