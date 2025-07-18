@@ -44,9 +44,9 @@
  */
 #define DRV_HEADER "Envel Graphics DSV v2.%d codec by EMMIR 2024-2025. "\
                    "encoder v%d. "  \
-                   "decoder v%d. build %d\n", \
+                   "decoder v%d.\n", \
                     DSV_VERSION_MINOR, \
-                    DSV_ENCODER_VERSION, DSV_DECODER_VERSION, DSV_VERSION_BUILD
+                    DSV_ENCODER_VERSION, DSV_DECODER_VERSION
 
 static int encoding = 0;
 static char *progname = NULL;
@@ -190,8 +190,8 @@ static struct PARAM enc_params[] = {
     { "bszy", -1, -1, 1, NULL,
             "override block sizes in the y (vertical) direction. -1 = auto-determine. -1 = default. 0 = 16, 1 = 32",
             "16 is recommended for < 1920x1080 content"},
-    { "scpct", 90, 0, 100, NULL,
-            "scene change percentage. 90 = default",
+    { "scpct", 85, 0, 100, NULL,
+            "scene change percentage. 85 = default",
             "decrease to make scene changes more common, increase to make them more infrequent"},
     { "skipthresh", 0, -1, INT_MAX, NULL,
            "skip block threshold. -1 = disable. 0 = default, larger value means more likely to mark a block as skipped.",
@@ -218,8 +218,8 @@ static struct PARAM enc_params[] = {
     { "ifilter", 1, 0, 1, NULL,
             "enable/disable intra frame deringing filter (essentially free assuming reasonable GOP length). 1 = default",
             "helps reduce ringing introduced at lower bit rates due to longer subband filters"},
-    { "pfilter", 1, 0, 1, NULL,
-            "enable/disable inter frame cleanup filter (small decoding perf hit but very noticeable increase in quality). 1 = default",
+    { "pfilter", -1, -1, 1, NULL,
+            "enable/disable inter frame cleanup filter (small decoding perf hit but very noticeable increase in quality). -1 = auto, 0 = disabled, 1 = enabled, -1 = default",
             "beneficial to coding efficiency and visual quality, highly recommended to keep enabled UNLESS source is very noisy"},
     { "psharp", 1, 0, 1, NULL,
             "inter frame sharpening. 0 = disabled, 1 = enabled, 1 = default",
