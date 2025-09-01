@@ -376,6 +376,9 @@ extern int d28_get_log_level(void);
 #define DSV_SAR(v, s) ((v) >> (s))
 #endif
 
+/* rounding version */
+#define DSV_SAR_R(v, s) (((v) + (1 << ((s) - 1))) >> (s))
+
 #define DSV_FMT_FULL_V 0x0
 #define DSV_FMT_DIV2_V 0x1
 #define DSV_FMT_DIV4_V 0x2
@@ -3283,8 +3286,8 @@ decode_motion(DSV_IMAGE *img, DSV_MV *mvs, DSV_BS *inbs, DSV_BUF *buf, int *stat
 
                 mv_pred(mvs, params, i, j, &px, &py);
                 if (DSV_MV_IS_INTRA(mv)) {
-                    px = DSV_SAR(px, 2);
-                    py = DSV_SAR(py, 2);
+                    px = DSV_SAR_R(px, 2);
+                    py = DSV_SAR_R(py, 2);
                 }
                 mv->u.mv.x = bs_get_seg(bs + DSV_SUB_MV_X) + px;
                 mv->u.mv.y = bs_get_seg(bs + DSV_SUB_MV_Y) + py;
