@@ -18,7 +18,9 @@ minih264:
 
 
 
-https://github.com/user-attachments/assets/a309edb4-3866-4220-9c6b-61ced3acbbcd
+https://github.com/user-attachments/assets/e5695fa1-afa7-4205-9901-1993569efd88
+
+
 
 
 
@@ -28,7 +30,8 @@ DSV2:
 
 
 
-https://github.com/user-attachments/assets/f6cbf927-3e2a-4078-a086-e5fb47ea66ab
+https://github.com/user-attachments/assets/379beb83-b0ff-4349-a93b-a0b16b72e85c
+
 
 
 
@@ -173,7 +176,7 @@ itch.io: https://kingscrook.itch.io/kings-crook
 ------
 ## Example videos:
 
-All videos are encoded at 29.97fps with a GOP length of 12.
+All videos are encoded at 29.97fps with a GOP length of 60.
 The H.264 file sizes were within a few kilobytes of their respective DSV2 file size.
 H.264 examples were encoded using https://github.com/lieff/minih264 using -speed0 (best quality)
 DSV2 examples were encoded with -effort=10 (best quality)
@@ -183,14 +186,18 @@ Husky CIF
 minih264:
 
 
-https://github.com/user-attachments/assets/2ddb2d57-fe48-4cef-b755-42230393c6e9
+
+https://github.com/user-attachments/assets/be2a2b30-c15b-4ecc-913a-d7c47445224b
+
 
 
 DSV2:
 
 
 
-https://github.com/user-attachments/assets/4a93cc8e-0618-4993-9efb-f2a121a75aed
+https://github.com/user-attachments/assets/b0975e1d-74f9-4322-bbeb-0edbd81bba39
+
+
 
 
 
@@ -200,29 +207,17 @@ Mobile CIF
 minih264:
 
 
-https://github.com/user-attachments/assets/4fa90a3c-38ad-45f3-b41b-3017ea20da6f
+
+https://github.com/user-attachments/assets/5562d96d-092c-46da-b0ab-1063bd0587a6
+
+
 
 DSV2:
 
 
 
 
-https://github.com/user-attachments/assets/27bf1e6a-3668-4d5c-a66c-a9ea7c7c822d
+https://github.com/user-attachments/assets/fa2861d8-4e50-47fb-b523-41ac7ee1dd5b
 
-
-
-
-------
-Bus CIF
-
-minih264:
-
-
-https://github.com/user-attachments/assets/f3930a65-db02-47d7-a2ac-f2c73c5bae80
-
-DSV2:
-
-
-https://github.com/user-attachments/assets/86805c29-011a-4cb7-bc03-105616e183cf
 
 
