@@ -129,7 +129,7 @@ static struct PARAM enc_params[] = {
             "unlike -sfr, this parameter works when piping from stdin"},
     { "sfr", 0, 0, INT_MAX, NULL,
             "frame number to start compressing at. 0 = default",
-            "does not work when piping from stdin"},
+            "if piping in from stdin, it will read+skip 'sfr' frames of the piped input before it starts encoding"},
     { "noeos", 0, 0, 1, NULL,
             "do not write EOS packet at the end of the compressed stream. 0 = default",
             "useful for multithreaded encoding via concatenation"},
@@ -553,7 +553,7 @@ encode(void)
     int w, h, fps;
     int maxframe;
     FILE *inpfile;
-    unsigned frno = 0;
+    unsigned frno = 0, total_frames = 0, skip_frames = 0;
     int nfr;
     int y4m_in = 0;
     int write_eos = 1;
@@ -737,12 +737,18 @@ encode(void)
         if (y4m_in) {
             if (opts.inp[0] == USE_STDIO_CHAR) {
                 frame_read = dsv_y4m_read_seq(inpfile, picture, w, h, md.subsamp);
+                if (skip_frames++ < frno) {
+                    continue;
+                }
             } else {
                 frame_read = dsv_y4m_read(inpfile, frno, full_hdrsz, picture, w, h, md.subsamp);
             }
         } else {
             if (opts.inp[0] == USE_STDIO_CHAR) {
                 frame_read = dsv_yuv_read_seq(inpfile, picture, w, h, md.subsamp);
+                if (skip_frames++ < frno) {
+                    continue;
+                }
             } else {
                 frame_read = dsv_yuv_read(inpfile, frno, picture, w, h, md.subsamp);
             }
@@ -755,7 +761,6 @@ encode(void)
             goto end_of_stream;
         }
         frame = dsv_load_planar_frame(md.subsamp, picture, w, h);
-
         if (verbose) {
             printf("encoding frame %d\r", frno);
             fflush(stdout);
@@ -779,6 +784,7 @@ encode(void)
             dsv_buf_free(&bufs[i]);
         }
         frno++;
+        total_frames++;
         continue;
 end_of_stream:
         if (write_eos || (!write_eos && no_more_data && bufsz > 0)) {
@@ -793,7 +799,7 @@ end_of_stream:
         /* KBps = kiloBYTES, kbps = kiloBITS */
         int bpf, bps, kbps, mbps;
 
-        bpf = (bufsz * 8) / frno;
+        bpf = (bufsz * 8) / total_frames;
         bps = bpf * fps;
         kbps = bps / 1024;
         mbps = kbps / 1024;
@@ -802,6 +808,80 @@ end_of_stream:
         if (enc.rc_mode == DSV_RATE_CONTROL_ABR) {
             printf("target bitrate = %d bps  %d KBps  %d kbps\n",
                     enc.bitrate, enc.bitrate / (8 * 1024), enc.bitrate / 1024);
+        }
+
+        if (enc.stats.inum) { // stats
+            printf("num I (filt/total): %u/%u, total bytes: %u, [min,avg,max] -> qual: [%u, %u, %u], bytes: [%u, %u, %u]\n",
+                    enc.stats.ifnum,
+                    enc.stats.inum,
+                    enc.stats.isize,
+                    enc.stats.iminq,
+                    enc.stats.iqual / enc.stats.inum,
+                    enc.stats.imaxq,
+                    enc.stats.imins,
+                    enc.stats.isize / enc.stats.inum,
+                    enc.stats.imaxs);
+
+            if (enc.stats.pnum) {
+                int stat1;
+                printf("num P (filt/total): %u/%u, total bytes: %u, [min,avg,max] -> qual: [%u, %u, %u], bytes: [%u, %u, %u]\n",
+                        enc.stats.pfnum,
+                        enc.stats.pnum,
+                        enc.stats.psize,
+                        enc.stats.pminq,
+                        enc.stats.pqual / enc.stats.pnum,
+                        enc.stats.pmaxq,
+                        enc.stats.pmins,
+                        enc.stats.psize / enc.stats.pnum,
+                        enc.stats.pmaxs);
+                stat1 = (enc.stats.mbI * 1000) / enc.stats.mb;
+                printf("avg intra blocks: %u.%u%%\n", stat1 / 10, stat1 % 10);
+                stat1 = (enc.stats.mbP * 1000) / enc.stats.mb;
+                printf("avg inter blocks: %u.%u%%\n", stat1 / 10, stat1 % 10);
+
+                stat1 = (enc.stats.eprm * 1000) / enc.stats.mb;
+                printf("avg eprm: %u.%u%%\n", stat1 / 10, stat1 % 10);
+                stat1 = (enc.stats.skip * 1000) / enc.stats.mb;
+                printf("avg skip: %u.%u%%\n", stat1 / 10, stat1 % 10);
+                if (enc.stats.mbI) {
+                    int stat2, stat3, stat4;
+
+                    stat1 = (enc.stats.mbdc * 1000) / enc.stats.mbI;
+                    printf("avg dc: %u.%u%%\n", stat1 / 10, stat1 % 10);
+                    stat1 = (enc.stats.mbsub * 1000) / enc.stats.mbI;
+                    printf("avg sub: %u.%u%%\n", stat1 / 10, stat1 % 10);
+                    if (enc.stats.mbsub) {
+                        stat1 = (enc.stats.mbsubs[0] * 1000) / enc.stats.mbsub;
+                        stat2 = (enc.stats.mbsubs[1] * 1000) / enc.stats.mbsub;
+                        stat3 = (enc.stats.mbsubs[2] * 1000) / enc.stats.mbsub;
+                        stat4 = (enc.stats.mbsubs[3] * 1000) / enc.stats.mbsub;
+                        printf("avg subs[00,01,10,11]: [%u.%u%%, %u.%u%%, %u.%u%%, %u.%u%%]\n",
+                                stat1 / 10, stat1 % 10,
+                                stat2 / 10, stat2 % 10,
+                                stat3 / 10, stat3 % 10,
+                                stat4 / 10, stat4 % 10);
+                    }
+                }
+                if (enc.stats.mbP) {
+                    int stat2;
+
+                    stat1 = (enc.stats.fpx * 1000) / enc.stats.mbP;
+                    stat2 = (enc.stats.fpy * 1000) / enc.stats.mbP;
+                    printf("avg fp[x,y]: [%u.%u%%, %u.%u%%]\n",
+                            stat1 / 10, stat1 % 10,
+                            stat2 / 10, stat2 % 10);
+                    stat1 = (enc.stats.hpx * 1000) / enc.stats.mbP;
+                    stat2 = (enc.stats.hpy * 1000) / enc.stats.mbP;
+                    printf("avg hp[x,y]: [%u.%u%%, %u.%u%%]\n",
+                            stat1 / 10, stat1 % 10,
+                            stat2 / 10, stat2 % 10);
+                    stat1 = (enc.stats.qpx * 1000) / enc.stats.mbP;
+                    stat2 = (enc.stats.qpy * 1000) / enc.stats.mbP;
+                    printf("avg qp[x,y]: [%u.%u%%, %u.%u%%]\n",
+                            stat1 / 10, stat1 % 10,
+                            stat2 / 10, stat2 % 10);
+                }
+            }
         }
     }
 
