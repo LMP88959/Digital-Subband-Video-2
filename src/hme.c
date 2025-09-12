@@ -18,38 +18,41 @@
 
 /* Hierarchical Motion Estimation */
 
-
 /* 1 = disable sending luma residuals,
  * 2 = disable sending luma+chroma residuals
  */
 #define NO_RESIDUALS 0
+
+#define DO_GOOD_ENOUGH 1
 
 #define AVG2(a, b) (((a) + (b) + 1) >> 1)
 #define AVG4(a, b, c, d) (((a) + (b) + (c) + (d) + 2) >> 2)
 #define UAVG4(a, b, c, d) ((unsigned) ((a) + (b) + (c) + (d) + 2) >> 2)
 #define MV_LT(v, t) (abs((v)->u.mv.x) < (t) && abs((v)->u.mv.y) < (t)) /* less than */
 #define MV_GT(v, t) (abs((v)->u.mv.x) > (t) && abs((v)->u.mv.y) > (t)) /* greater than */
-#define MV_MAG(v) ((abs((v)->u.mv.x) + abs((v)->u.mv.y) + 1) >> 1) /* not actual mag */
+#define MV_MAG(v) AVG2(abs((v)->u.mv.x), abs((v)->u.mv.y)) /* not actual mag */
 #define MV_CMP(v, vx, vy, t) (abs((v)->u.mv.x - (int) (vx)) < (t) && abs((v)->u.mv.y - (int) (vy)) < (t))
 #define MK_MV_COMP(fp, hp, qp) ((fp) * 4 + (hp) * 2 + (qp))
+#define SQR(x) ((x) * (x))
+
+/* qpel to fpel */
+#define QP2FP(fpel, qpel)                             \
+    do {                                              \
+        (fpel)->u.mv.x = DSV_SAR_R((qpel)->u.mv.x, 2);\
+        (fpel)->u.mv.y = DSV_SAR_R((qpel)->u.mv.y, 2);\
+    } while (0)
 
 #define ABSDIF(a, b) abs((int) (a) - (int) (b))
+
+#define N_SEARCH_PTS 9
+/* READ-ONLY */
+static int rectx[N_SEARCH_PTS] = { 0, 1, -1, 0,  0, -1,  1, -1, 1 };
+static int recty[N_SEARCH_PTS] = { 0, 0,  0, 1, -1, -1, -1,  1, 1 };
 
 static uint8_t
 clamp_u8(int v)
 {
     return v > 255 ? 255 : v < 0 ? 0 : v;
-}
-
-static int
-similar_complexity(int varD, int varS, int mul)
-{
-    unsigned dif, f;
-
-    dif = ABSDIF(varD, varS);
-    f = varS * mul >> 2;
-
-    return (dif < MAX(1, f));
 }
 
 typedef struct {
@@ -85,14 +88,23 @@ chroma_analysis(CHROMA_PSY *c, int y, int u, int v)
 #define HP_STRIDE (SP_DIM * 2)
 #define QP_STRIDE (SP_DIM * 4)
 
-#define METRIC_ERR(d) ((d) * (d))
-#define METRIC_RETURN(a, w, h) (iisqrt(a)*(w)*(h)/(((w)+(h)+1)>>1))
+#define METRIC_NORM 7 /* sum of 2^weights should equal this */
+typedef struct {
+    int err_weight;
+    int tex_weight;
+    int avg_weight; /* 2x2 DC similarity is more important at higher quants */
+} PSY_COEFS;
+
+#define METRIC_RETURN(a, w, h) (iisqrt(a)*(w)*(h)/AVG2(w,h))
 
 static unsigned
 iisqrt(unsigned n)
 {
     unsigned pos, res, rem;
 
+    if (n == 0) {
+        return 0;
+    }
     res = 0;
     pos = 1 << 30;
     rem = n;
@@ -110,6 +122,16 @@ iisqrt(unsigned n)
         pos >>= 2;
     }
     return res;
+}
+
+#define METR_CALC(acc) {                                                    \
+        int ta, tb, se;/* texture in block A, ~ block B, squared error */   \
+        se = UAVG4(abs(a1 - b1), abs(a2 - b2), abs(a3 - b3), abs(a4 - b4)); \
+        ta = UAVG4(abs(a1 - a2), abs(a2 - a3), abs(a3 - a4), abs(a4 - a1)); \
+        tb = UAVG4(abs(b1 - b2), abs(b2 - b3), abs(b3 - b4), abs(b4 - b1)); \
+        (acc) += SQR(se) << psy->err_weight;                                \
+        (acc) += SQR(ta - tb) << psy->tex_weight;                           \
+        (acc) += SQR(s0 - s1) << psy->avg_weight;                           \
 }
 
 #define METR_BODY(w, h)                                        \
@@ -130,29 +152,26 @@ iisqrt(unsigned n)
                 b4 = b[bp + 1 + bs];                           \
                 s1 = UAVG4(b1, b2, b3, b4);                    \
                 bp += 2;                                       \
-                acc += METRIC_ERR(a1 - b1);                    \
-                acc += METRIC_ERR(a2 - b2);                    \
-                acc += METRIC_ERR(a3 - b3);                    \
-                acc += METRIC_ERR(a4 - b4);                    \
-                acc += 2 * METRIC_ERR(s0 - s1);                \
+                METR_CALC(acc);                                \
             }                                                  \
             a += 2 * as;                                       \
             b += 2 * bs;                                       \
         }                                                      \
-        return METRIC_RETURN(acc, w, h)
 
 #define MAKE_METR(w)                                           \
 static unsigned                                                \
-metr_ ##w## xh(uint8_t *a, int as, uint8_t *b, int bs, int h)  \
+metr_ ##w## xh(uint8_t *a, int as, uint8_t *b, int bs, int h, PSY_COEFS *psy)  \
 {                                                              \
     METR_BODY(w, h);                                           \
+    return METRIC_RETURN(acc, w, h);                           \
 }
 
 #define MAKE_METRWH(w, h)                                      \
 static unsigned                                                \
-metr_ ##w## x ##h## x (uint8_t *a, int as, uint8_t *b, int bs) \
+metr_ ##w## x ##h## x (uint8_t *a, int as, uint8_t *b, int bs, PSY_COEFS *psy) \
 {                                                              \
     METR_BODY(w, h);                                           \
+    return METRIC_RETURN(acc, w, h);                           \
 }
 
 MAKE_METR(8)
@@ -164,14 +183,25 @@ MAKE_METRWH(16, 16)
 MAKE_METRWH(32, 32)
 
 static unsigned
-metr_wxh(uint8_t *a, int as, uint8_t *b, int bs, int w, int h)
+metr_wxh(uint8_t *a, int as, uint8_t *b, int bs, int w, int h, PSY_COEFS *psy)
 {
     METR_BODY(w, h);
+    return METRIC_RETURN(acc, w, h);
+}
+
+static unsigned
+umetr_wxh(uint8_t *a, int as, uint8_t *b, int bs, int w, int h, PSY_COEFS *psy)
+{
+    METR_BODY(w, h);
+    return acc;
 }
 
 #define SSE_BODY(w, h)                                        \
         int i, j;                                             \
         unsigned acc = 0;                                     \
+        if (w == 0 || h == 0) {                               \
+            return INT_MAX;                                   \
+        }                                                     \
         for (j = 0; j < h; j++) {                             \
             for (i = 0; i < w; i++) {                         \
                 int dif = (a[i] - b[i]);                      \
@@ -213,84 +243,67 @@ sse_wxh(uint8_t *a, int as, uint8_t *b, int bs, int w, int h)
 }
 
 static unsigned
-qpsad(uint8_t *a, int as, uint8_t *b)
+qpsad(uint8_t *a, int as, uint8_t *b, PSY_COEFS *psy)
 {
     int i, j;
     unsigned acc = 0;
-    for (j = 0; j < SP_SAD_SZ; j++) {
-        for (i = 0; i < SP_SAD_SZ; i++) {
-            unsigned d = METRIC_ERR((int) a[i] - (int) b[QP_OFFSET(i, j)]);
-            acc += d;
+    for (j = 0; j < SP_SAD_SZ / 2; j++) {
+        int ap = 0;
+        for (i = 0; i < SP_SAD_SZ / 2; i++) {
+            int a1, a2, a3, a4, b1, b2, b3, b4, s0, s1;
+            a1 = a[ap];
+            a2 = a[ap + 1];
+            a3 = a[ap + as];
+            a4 = a[ap + 1 + as];
+            s0 = UAVG4(a1, a2, a3, a4);
+            b1 = b[QP_OFFSET(i * 2, j * 2)];
+            b2 = b[QP_OFFSET(i * 2 + 1, j * 2)];
+            b3 = b[QP_OFFSET(i * 2, j * 2 + 1)];
+            b4 = b[QP_OFFSET(i * 2 + 1, j * 2 + 1)];
+            s1 = UAVG4(b1, b2, b3, b4);
+            ap += 2;
+            METR_CALC(acc);
         }
-        a += as;
+        a += 2 * as;
     }
     return METRIC_RETURN(acc, SP_SAD_SZ, SP_SAD_SZ);
 }
 
-static void
-sse_intra(uint8_t *a, int as, uint8_t *b, int bs,
-          int avg_sb, int avg_src, int w, int h,
-          unsigned *intra_err, unsigned *intrasrc_err, unsigned *inter_err)
+static unsigned
+fastmetr(uint8_t *a, int as, uint8_t *b, int bs, int w, int h, PSY_COEFS *psy)
 {
-    int i, j, dif;
-    unsigned intra_sb = 0, intra_src = 0, inter = 0;
-
-    for (j = 0; j < h; j++) {
-        for (i = 0; i < w; i++) {
-            dif = (a[i] - avg_sb);
-            intra_sb += dif * dif;
-            dif = (a[i] - avg_src);
-            intra_src += dif * dif;
-            dif = (a[i] - b[i]);
-            inter += dif * dif;
-        }
-        a += as;
-        b += bs;
+    if (w == 0 || h == 0) {
+        return INT_MAX;
     }
-    *intra_err = intra_sb;
-    *intrasrc_err = intra_src;
-    *inter_err = inter;
-}
-
-static unsigned
-msse_wxh(uint8_t *a, int as, uint8_t *b, int bs, int w, int h)
-{
-    SSE_BODY(w, h);
-    return METRIC_RETURN(acc, w, h);
-}
-
-static unsigned
-fastmetr(uint8_t *a, int as, uint8_t *b, int bs, int w, int h)
-{
     switch (w) {
         case 8:
             switch (h) {
                 case 8:
-                    return metr_8x8x(a, as, b, bs);
+                    return metr_8x8x(a, as, b, bs, psy);
                 default:
-                    return metr_8xh(a, as, b, bs, h);
+                    return metr_8xh(a, as, b, bs, h, psy);
             }
             break;
         case 16:
             switch (h) {
                 case 16:
-                    return metr_16x16x(a, as, b, bs);
+                    return metr_16x16x(a, as, b, bs, psy);
                 default:
-                    return metr_16xh(a, as, b, bs, h);
+                    return metr_16xh(a, as, b, bs, h, psy);
             }
             break;
         case 32:
             switch (h) {
                 case 32:
-                    return metr_32x32x(a, as, b, bs);
+                    return metr_32x32x(a, as, b, bs, psy);
                 default:
-                    return metr_32xh(a, as, b, bs, h);
+                    return metr_32xh(a, as, b, bs, h, psy);
             }
             break;
         default:
             break;
     }
-    return metr_wxh(a, as, b, bs, w, h);
+    return metr_wxh(a, as, b, bs, w, h, psy);
 }
 
 static unsigned
@@ -327,29 +340,41 @@ fastsse(uint8_t *a, int as, uint8_t *b, int bs, int w, int h)
     return sse_wxh(a, as, b, bs, w, h);
 }
 
+/* corresponds to switch statement in hier_metr */
+#define SQUARED_LEVELS (level > 1)
 static unsigned
-hier_metr(int level, uint8_t *a, int as, uint8_t *b, int bs, int w, int h)
+hier_metr(int level, uint8_t *a, int as, uint8_t *b, int bs, int w, int h, PSY_COEFS *psy)
 {
     /* change metric depending on level in hierarchy */
-    switch (level) {
-        case 0:
-            return fastmetr(a, as, b, bs, w, h);
-        default:
-            return fastsse(a, as, b, bs, w, h);
+    if (SQUARED_LEVELS) {
+        return fastsse(a, as, b, bs, w, h);
     }
+    return fastmetr(a, as, b, bs, w, h, psy);
 }
 
-/* full-pel MSSE of luma and chroma */
+static int
+mv_cost(DSV_MV *vecs, DSV_PARAMS *p, int i, int j, int mx, int my, int q, int level)
+{
+    int sqr, cost;
+
+    sqr = SQUARED_LEVELS;
+    cost = dsv_mv_cost(vecs, p, i, j, mx, my, q, sqr);
+    cost = MIN(cost, 1 << 19);
+    if (sqr) {
+        return cost * (q * q >> DSV_MAX_QP_BITS) >> (DSV_MAX_QP_BITS - 2);
+    }
+    return 3 * cost * q >> DSV_MAX_QP_BITS;
+}
+
+/* full-pel error of luma and chroma */
 static void
-yuv_err(unsigned res[3], unsigned sub[3][4], DSV_FRAME *src, DSV_FRAME *ref,
-        int bx, int by, int bw, int bh,
-        int cbx, int cby, int cbw, int cbh)
+yuv_max_subblock_err(unsigned max_err[3], DSV_FRAME *src, DSV_FRAME *ref,
+        int bx, int by, int brx, int bry, int bw, int bh,
+        int cbx, int cby, int cbrx, int cbry, int cbw, int cbh, PSY_COEFS *psy)
 {
     int f, g, z;
     DSV_PLANE *sp, *rp;
 
-    memset(res, 0, 3 * sizeof(unsigned));
-    memset(sub, 0, 3 * 4 * sizeof(unsigned));
     sp = src->planes;
     rp = ref->planes;
     bw /= 2;
@@ -357,25 +382,30 @@ yuv_err(unsigned res[3], unsigned sub[3][4], DSV_FRAME *src, DSV_FRAME *ref,
     cbw /= 2;
     cbh /= 2;
     for (z = 0; z < 3; z++) {
+        unsigned sub[4];
         int subpos = 0;
-        for (g = 0; g <= bh; g += bh) {
-            for (f = 0; f <= bw; f += bw) {
+
+        memset(sub, 0, sizeof(sub));
+        for (g = 0; g <= bh; g += (bh + !bh)) {
+            for (f = 0; f <= bw; f += (bw + !bw)) {
                 uint8_t *src_d, *ref_d;
 
                 src_d = DSV_GET_XY(&sp[z], bx, by) + (f + g * sp[z].stride);
-                ref_d = DSV_GET_XY(&rp[z], bx, by) + (f + g * rp[z].stride);
-                sub[z][subpos] = msse_wxh(
+                ref_d = DSV_GET_XY(&rp[z], brx, bry) + (f + g * rp[z].stride);
+                sub[subpos] = umetr_wxh(
                         src_d, sp[z].stride,
-                        ref_d, rp[z].stride, bw, bh);
-                res[z] += sub[z][subpos];
+                        ref_d, rp[z].stride, bw, bh, psy);
                 subpos++;
             }
         }
         /* planes 1,2 are chroma */
         bx = cbx;
         by = cby;
+        brx = cbrx;
+        bry = cbry;
         bw = cbw;
         bh = cbh;
+        max_err[z] = MAX(MAX(sub[0], sub[1]), MAX(sub[2], sub[3]));
     }
 }
 
@@ -393,11 +423,12 @@ outofbounds(int i, int j, int nxb, int nyb, int y_w, int y_h, DSV_MV *mv)
 
     return (px < 0 || py < 0 || px >= limx || py >= limy);
 }
+
 static int
-invalid_block(DSV_FRAME *f, int x, int y, int sx, int sy)
+invalid_block(DSV_FRAME *f, int bx, int by, int bw, int bh)
 {
     int b = f->border * DSV_FRAME_BORDER;
-    return x < -b || y < -b || x + sx > f->width + b || y + sy > f->height + b;
+    return bx < -b || by < -b || bx + bw > f->width + b || by + bh > f->height + b;
 }
 
 static int
@@ -415,39 +446,33 @@ block_avg(uint8_t *a, int as, int w, int h)
     return avg / (w * h);
 }
 
-/*
- * determine if this block needs EPRM
- */
+/* determine if this block needs EPRM */
 static void
-calc_EPRM(DSV_PLANE *sp, DSV_PLANE *mvrp, int avg_src,
+calc_EPRM(DSV_PLANE *sp, DSV_PLANE *mvrp, int avg_src, int avg_ref,
           int w, int h, int *eprmi, int *eprmd, int *eprmr)
 {
     int i, j;
-    int ravg, prd;
     int clipi = 0;
     int clipd = 0;
     int clipr = 0;
     uint8_t *mvr = mvrp->data;
     uint8_t *src = sp->data;
 
-    ravg = block_avg(mvrp->data, mvrp->stride, w, h) - 128;
     *eprmi = 0;
     *eprmr = 0;
     avg_src -= 128;
+    avg_ref -= 128;
     for (j = 0; j < h; j++) {
         for (i = 0; i < w; i++) {
             /* see if MV pred or intra pred would clip and require EPRM */
             if (!clipr) {
-                prd = (src[i] - mvr[i]) + 128;
-                clipr = prd & ~0xff;
+                clipr = ((src[i] - mvr[i]) + 128) & ~0xff;
             }
             if (!clipi) {
-                prd = (src[i] - ravg); /* ravg is precomputed with 128 offset */
-                clipi = prd & ~0xff;
+                clipi = (src[i] - avg_ref) & ~0xff;
             }
             if (!clipd) {
-                prd = (src[i] - avg_src);
-                clipd = prd & ~0xff;
+                clipd = (src[i] - avg_src) & ~0xff;
             }
             if (clipi && clipd && clipr) {
                 goto eprm_done;
@@ -810,13 +835,66 @@ qpel(uint8_t *dec, uint8_t *ref)
 }
 
 static void
+err_intra(uint8_t *a, int as, uint8_t *b, int bs,
+          int avg_sb, int avg_src, int w, int h,
+          unsigned *intra_err, unsigned *intrasrc_err, unsigned *inter_err,
+          PSY_COEFS *psy, int ratio)
+{
+    int i, j;
+    unsigned intra_sb = 0, intra_src = 0, inter = 0;
+    for (j = 0; j < h / 2; j++) {
+        int bp = 0;
+        for (i = 0; i < w / 2; i++) {
+            int a1, a2, a3, a4, b1, b2, b3, b4, s0, s1;
+            int ta, tb, ae;
+            a1 = a[bp];
+            a2 = a[bp + 1];
+            a3 = a[bp + as];
+            a4 = a[bp + 1 + as];
+            s0 = UAVG4(a1, a2, a3, a4);
+            b1 = b[bp];
+            b2 = b[bp + 1];
+            b3 = b[bp + bs];
+            b4 = b[bp + 1 + bs];
+            s1 = UAVG4(b1, b2, b3, b4);
+            bp += 2;
+
+            ae = UAVG4(abs(a1 - b1), abs(a2 - b2), abs(a3 - b3), abs(a4 - b4));
+            ta = UAVG4(abs(a1 - a2), abs(a2 - a3), abs(a3 - a4), abs(a4 - a1));
+            tb = UAVG4(abs(b1 - b2), abs(b2 - b3), abs(b3 - b4), abs(b4 - b1));
+            inter += SQR(ae) * ratio >> (5 - psy->err_weight);
+            inter += SQR(ta - tb) << psy->tex_weight;
+            inter += SQR(s0 - s1) << psy->avg_weight;
+
+            ae = UAVG4(abs(a1 - avg_sb), abs(a2 - avg_sb), abs(a3 - avg_sb), abs(a4 - avg_sb));
+            ta = UAVG4(abs(a1 - a2), abs(a2 - a3), abs(a3 - a4), abs(a4 - a1));
+            intra_sb += SQR(ae) << psy->err_weight;
+            intra_sb += SQR(ta) << psy->tex_weight;
+            intra_sb += SQR(s0 - avg_sb) << (psy->avg_weight + 1);
+
+            ae = UAVG4(abs(a1 - avg_src), abs(a2 - avg_src), abs(a3 - avg_src), abs(a4 - avg_src));
+            ta = UAVG4(abs(a1 - a2), abs(a2 - a3), abs(a3 - a4), abs(a4 - a1));
+            intra_src += SQR(ae) << psy->err_weight;
+            intra_src += SQR(ta) << psy->tex_weight;
+            intra_src += SQR(s0 - avg_src) << (psy->avg_weight + 1);
+        }
+        a += 2 * as;
+        b += 2 * bs;
+    }
+    *intra_err = intra_sb;
+    *intrasrc_err = intra_src;
+    *inter_err = inter * ratio >> 5;
+}
+
+static void
 test_subblock_intra_y(DSV_PARAMS *params, DSV_MV *refmv, DSV_MV *mv,
         DSV_PLANE *srcp, DSV_PLANE *refp,
         int detail_src, int avg_src, int neidif, unsigned ratio,
         int bw, int bh)
 {
     int f, g, sbw, sbh, bit_index, nsub = 0, psyscale;
-    unsigned avgs[4], avg_tot = 0, err_sub = 0, err_src = 0;
+    unsigned avg_tot = 0, err_sub = 0, err_src = 0;
+    PSY_COEFS psy;
     uint8_t bits[4] = {
             DSV_MASK_INTRA00,
             DSV_MASK_INTRA01,
@@ -826,26 +904,27 @@ test_subblock_intra_y(DSV_PARAMS *params, DSV_MV *refmv, DSV_MV *mv,
     if (refmv == NULL) {
         refmv = mv;
     }
+    if (mv->u.all && neidif < 3 && MV_CMP(refmv, mv->u.mv.x, mv->u.mv.y, 3)) {
+        return;
+    }
     sbw = bw / 2;
     sbh = bh / 2;
-    if (sbw == 0 || sbh == 0 || (refmv->u.all == 0 && mv->u.all == 0)) {
+    if (sbw == 0 || sbh == 0) {
         return;
     }
-
-    if (MV_LT(mv, 4) && ratio <= 26 && neidif < 6) {
-        return;
-    }
-
+    psy.avg_weight = 2;
+    psy.err_weight = 0;
+    psy.tex_weight = 1;
     psyscale = dsv_spatial_psy_factor(params, -1);
     bit_index = 0;
     /* increase detail bias proportionally to how similar the MV was to its neighbors */
     detail_src += detail_src / MAX(neidif, 1);
-    for (g = 0; g <= sbh; g += sbh) {
-        for (f = 0; f <= sbw; f += sbw) {
+    for (g = 0; g <= sbh; g += (sbh + !sbh)) {
+        for (f = 0; f <= sbw; f += (sbw + !sbw)) {
             uint8_t *src_d, *mvr_d;
-            unsigned avg_sub, local_detail;
+            unsigned avg_local, avg_sub, local_detail, dcd;
             unsigned sub_pred_err, src_pred_err, intererr;
-            int lo, hi, lerp, sub_better, src_better;
+            int dc, lo, hi, lerp, sub_better, src_better;
 
             src_d = srcp->data + (f + g * srcp->stride);
             mvr_d = refp->data + (f + g * refp->stride);
@@ -854,14 +933,19 @@ test_subblock_intra_y(DSV_PARAMS *params, DSV_MV *refmv, DSV_MV *mv,
                 goto next;
             }
             avg_sub = block_avg(mvr_d, refp->stride, sbw, sbh);
-            sse_intra(src_d, srcp->stride, mvr_d, refp->stride, avg_sub, avg_src, sbw, sbh, &sub_pred_err, &src_pred_err, &intererr);
-            intererr = intererr * ratio >> 5;
 
-            local_detail = block_detail(src_d, srcp->stride, sbw, sbh, &avgs[bit_index]);
-            if (local_detail > (unsigned) (3 * bw * bh)) {
+            local_detail = block_detail(src_d, srcp->stride, sbw, sbh, &avg_local);
+            dcd = ABSDIF(avg_local, avg_sub) + 2;
+            if (local_detail > (unsigned) (SQR(dcd) * bw * bh * ratio >> 5)) {
                 goto next;
             }
-            lo = (detail_src + local_detail + 1) >> 1;
+            dc = (avg_local + avg_src * 3 + 2) >> 2;
+            err_intra(
+                    src_d, srcp->stride,
+                    mvr_d, refp->stride,
+                    avg_sub, dc, sbw, sbh,
+                    &sub_pred_err, &src_pred_err, &intererr, &psy, ratio);
+            lo = AVG2(detail_src, local_detail);
             hi = detail_src;
             /* scale importance of subblock (local) detail vs whole block detail based on video size */
             lerp = (lo * (32 - psyscale) + hi * psyscale) >> 5; /* interpolate */
@@ -873,10 +957,14 @@ test_subblock_intra_y(DSV_PARAMS *params, DSV_MV *refmv, DSV_MV *mv,
             /* compare ref subblock predicted intra to src subblock predicted intra */
             if (sub_better || src_better) {
                 mv->submask |= bits[bit_index];
-                nsub++;
                 err_src += src_pred_err;
                 err_sub += sub_pred_err;
-                avg_tot += avgs[bit_index];
+                if (sub_pred_err < src_pred_err) {
+                    avg_tot += avg_sub;
+                } else {
+                    avg_tot += dc;
+                }
+                nsub++;
                 /* lower the threshold for subsequent subblocks since we're already going to be intra-ing the block anyway */
                 detail_src = detail_src * 4 / 5;
             }
@@ -895,17 +983,13 @@ next:
 }
 
 static void
-test_subblock_intra_c(int i, int j,
-        DSV_PARAMS *params, DSV_MV *mv,
+test_subblock_intra_c(
+        DSV_PARAMS *params, DSV_MV *mv, DSV_PLANE *sp, DSV_PLANE *rp,
         unsigned mad, unsigned detail_src, unsigned avg_src,
-        int fpelx, int fpely,
-        DSV_PLANE *sp, DSV_PLANE *rp,
-        int y_w, int y_h,
-        int bw, int bh)
+        int cbx, int cby, int cbmx, int cbmy, int cbw, int cbh)
 {
-    int f, g, sbw, sbh, bit_index, hs, vs;
-    int mvx, mvy, cbx, cby;
-    unsigned avg_ramp;
+    int f, g, sbw, sbh, bit_index, already_intra;
+    unsigned avg_ramp, thr;
     uint8_t bits[4] = {
             DSV_MASK_INTRA00,
             DSV_MASK_INTRA01,
@@ -917,37 +1001,40 @@ test_subblock_intra_c(int i, int j,
         return;
     }
 
-    hs = DSV_FORMAT_H_SHIFT(params->vidmeta->subsamp);
-    vs = DSV_FORMAT_V_SHIFT(params->vidmeta->subsamp);
-    cbx = i * (y_w >> hs);
-    cby = j * (y_h >> vs);
-    mvx = cbx + DSV_SAR(fpelx, hs);
-    mvy = cby + DSV_SAR(fpely, vs);
-    sbw = (bw >> hs) / 2;
-    sbh = (bh >> vs) / 2;
-    detail_src /= (bw * bh);
-    if (sbw == 0 || sbh == 0 || mad <= detail_src) {
+    sbw = cbw / 2;
+    sbh = cbh / 2;
+    already_intra = DSV_MV_IS_INTRA(mv);
+    if (!already_intra) {
+        thr = SQR(detail_src);
+    } else {
+        thr = detail_src;
+    }
+    if (sbw == 0 || sbh == 0 || mad <= thr || thr > 32 || MV_LT(mv, 4)) {
         return;
     }
     avg_ramp = avg_src * avg_src >> 8;
     bit_index = 0;
-    for (g = 0; g <= sbh; g += sbh) {
-        for (f = 0; f <= sbw; f += sbw) {
+    for (g = 0; g <= sbh; g += (sbh + !sbh)) {
+        for (f = 0; f <= sbw; f += (sbw + !sbw)) {
             int uavg_src, vavg_src, uavg_mvr, vavg_mvr, erru, errv;
-            unsigned dif, thr;
+            unsigned dif;
 
             if (mv->submask & bits[bit_index]) {
                 /* already marked as intra, don't bother doing another check */
                 goto next;
             }
             c_average(sp, cbx + f, cby + g, sbw, sbh, &uavg_src, &vavg_src);
-            c_average(rp, mvx + f, mvy + g, sbw, sbh, &uavg_mvr, &vavg_mvr);
-            erru = abs(uavg_src - uavg_mvr);
-            errv = abs(vavg_src - vavg_mvr);
+            c_average(rp, cbmx + f, cbmy + g, sbw, sbh, &uavg_mvr, &vavg_mvr);
+            if (!already_intra) {
+                erru = abs(uavg_src - uavg_mvr);
+                errv = abs(vavg_src - vavg_mvr);
+            } else {
+                erru = SQR(uavg_src - uavg_mvr);
+                errv = SQR(vavg_src - vavg_mvr);
+            }
             /* scale error by squared average luma since I believe chroma error
              * is less noticeable in darker areas (just my observation) */
             dif = MAX(erru, errv) * avg_ramp >> 8;
-            thr = MIN(detail_src, 16);
 
             if (dif > thr) {
                 /* set as intra */
@@ -965,12 +1052,12 @@ next:
 static unsigned
 subpixel_ME(
         DSV_PARAMS *params,
-        DSV_MV *mf, /* motion vector field */
+        DSV_MV *mvf, /* motion vector field */
         DSV_MV *mv, /* current full-pixel motion vector */
         DSV_FRAME *src, DSV_FRAME *ref,
         int i, int j,
         unsigned best, int quant,
-        int bx, int by, int bw, int bh)
+        int bx, int by, int bw, int bh, PSY_COEFS *psy, int *found)
 {
     static uint8_t tmph[(2 + HP_STRIDE) * (2 + HP_STRIDE)];
     static uint8_t tmpq[(4 + QP_STRIDE) * (4 + QP_STRIDE)];
@@ -984,6 +1071,13 @@ subpixel_ME(
     int pri[2], sec[2], diag[2], bestv[2];
     int *testv[3];
     int area_ratio, iarea_ratio;
+
+    if (best == 0) {
+        mv->u.mv.x = MK_MV_COMP(mv->u.mv.x, 0, 0);
+        mv->u.mv.y = MK_MV_COMP(mv->u.mv.y, 0, 0);
+        *found = 1;
+        return best;
+    }
 
     testv[0] = pri;
     testv[1] = sec;
@@ -1001,7 +1095,6 @@ subpixel_ME(
     area_ratio = 8 * (SP_SAD_SZ * SP_SAD_SZ) / yarea;
     iarea_ratio = 8 * yarea / (SP_SAD_SZ * SP_SAD_SZ);
 
-    best = MAX((int) best - (int) (yarea / 2), 0);
     best = best * area_ratio >> 3;
     xx = bx + ((bw >> 1) - ((SP_SAD_SZ + 1) / 2));
     yy = by + ((bh >> 1) - ((SP_SAD_SZ + 1) / 2));
@@ -1048,19 +1141,20 @@ subpixel_ME(
             t[1] = pri[1] + diag[1];
         } else {
             int hpel = !(n & 1);
-            if (!hpel && params->effort < 8) { /* skip qpel at low effort */
-                continue;
-            }
             t[0] = testv[n >> 1][0] * (1 << hpel);
             t[1] = testv[n >> 1][1] * (1 << hpel);
         }
-        score = qpsad(srcsp.data, srcsp.stride, imq + t[0] + t[1] * QP_STRIDE);
+        if (((t[0] | t[1]) & 1) && params->effort < 8) { /* skip qpel at low effort */
+            continue;
+        }
+        score = qpsad(srcsp.data, srcsp.stride, imq + t[0] + t[1] * QP_STRIDE, psy);
         evx = MK_MV_COMP(mv->u.mv.x, 0, t[0]);
         evy = MK_MV_COMP(mv->u.mv.y, 0, t[1]);
-        cost = dsv_mv_cost(mf, params, i, j, evx, evy, quant, 0);
+        cost = mv_cost(mvf, params, i, j, evx, evy, quant, 0);
         if (best > score + cost) {
             best = score;
             SETVV(bestv, t);
+            *found = 1;
         }
     }
     mv->u.mv.x = MK_MV_COMP(mv->u.mv.x, 0, bestv[0]);
@@ -1086,12 +1180,128 @@ remove_dupes(DSV_MV **list, int n)
     return newn;
 }
 
+/* NOTE: assumes 'vx, vy' are fpel */
+#define ADD_MV_XY(list, vx, vy)               \
+do {                                          \
+    DSV_MV tmv;                               \
+    tmv.u.mv.x = vx * 4;                      \
+    tmv.u.mv.y = vy * 4;                      \
+    n = add_mv_to_list(hme, list, n, &tmv);   \
+} while(0)
+
+/* NOTE: assumes 'mv' is qpel */
 static int
-refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err)
+add_mv_to_list(DSV_HME *hme, DSV_MV **list, int n, DSV_MV *mv)
+{
+    list[n] = &hme->mv_bank[hme->n_mv_bank_used++];
+    QP2FP(list[n], mv);
+    return n + 1;
+}
+
+static int
+add_spatial_predictions(int level, int i, int j, int n, DSV_MV **list,
+        DSV_PARAMS *p, DSV_MV *mvf, DSV_HME *hme)
+{
+    int step;
+
+    step = 1 << level;
+    if (level == 0) {
+        DSV_MV tmv;
+        int px, py;
+
+        dsv_movec_pred(mvf, p, i, j, &px, &py);
+        tmv.u.mv.x = px;
+        tmv.u.mv.y = py;
+        n = add_mv_to_list(hme, list, n, &tmv);
+    }
+    if (i > 0) { /* left */
+        n = add_mv_to_list(hme, list, n, mvf + (i - step) + j * p->nblocks_h);
+    }
+    if (j > 0) { /* top */
+        n = add_mv_to_list(hme, list, n, mvf + i + (j - step) * p->nblocks_h);
+    }
+    if (i > 0 && j > 0) { /* top-left */
+        n = add_mv_to_list(hme, list, n, mvf + (i - step) + (j - step) * p->nblocks_h);
+    }
+    return n;
+}
+
+/* add spatially and temporally predicted candidates */
+static int
+add_temporal_predictions(int level, int i, int j, int n, DSV_MV **list,
+        DSV_PARAMS *p, DSV_HME *hme)
+{
+    DSV_MV *ref_mvf;
+    int step;
+
+    step = 1 << level;
+    ref_mvf = hme->ref_mvf;
+    if (ref_mvf != NULL) { /* if we have access to the previous frame's MVs */
+        int rx, ry, k;
+        /* add all temporal neighbors */
+        for (k = 0; k < N_SEARCH_PTS; k++) {
+            rx = i + rectx[k] * step;
+            ry = j + recty[k] * step;
+
+            if ((rx < 0) ||
+                (ry < 0) ||
+                (rx >= p->nblocks_h) ||
+                (ry >= p->nblocks_v)) {
+                continue;
+            }
+            n = add_mv_to_list(hme, list, n, ref_mvf + rx + ry * p->nblocks_h);
+        }
+    }
+    return n;
+}
+
+/* prune vectors that don't conform with the rest and take the new list's average */
+static int
+find_inliers(DSV_MV **list, DSV_MV **newl, int n, int *ax, int *ay)
+{
+    int i;
+    int dist[16];
+    int avgx, avgy;
+    int avgd = 0, ssd = 0, thresh, nin = 0;
+
+    if (n == 0) {
+        return 0;
+    }
+    avgx = *ax;
+    avgy = *ay;
+    for (i = 0; i < n; i++) {
+        dist[i] = (SQR(list[i]->u.mv.x - avgx) + SQR(list[i]->u.mv.y - avgy));
+        avgd += dist[i];
+    }
+    avgd /= n;
+    for (i = 0; i < n; i++) {
+        ssd += SQR(dist[i] - avgd);
+    }
+    thresh = avgd + iisqrt(ssd / n); /* average dist + stddev = thresh */
+    avgx = 0;
+    avgy = 0;
+    for (i = 0; i < n; i++) {
+        if (dist[i] <= thresh) {
+          avgx += list[i]->u.mv.x;
+          avgy += list[i]->u.mv.y;
+          newl[nin] = list[i];
+          nin++;
+      }
+    }
+    if (nin == 0) {
+        return 0;
+    }
+    *ax = avgx / nin;
+    *ay = avgy / nin;
+    return nin;
+}
+
+static int
+refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, int gx, int gy)
 {
     DSV_FRAME *src, *ref, *ogr;
     DSV_MV *mv;
-    DSV_MV *mf, *parent = NULL;
+    DSV_MV *mvf, *parent = NULL;
     DSV_PARAMS *params = hme->params;
     DSV_MV zero;
     int i, j, y_w, y_h, nxb, nyb, step, hs, vs;
@@ -1116,7 +1326,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err)
 
     hme->mvf[level] = dsv_alloc(sizeof(DSV_MV) * nxb * nyb);
 
-    mf = hme->mvf[level];
+    mvf = hme->mvf[level];
 
     hs = DSV_FORMAT_H_SHIFT(params->vidmeta->subsamp);
     vs = DSV_FORMAT_V_SHIFT(params->vidmeta->subsamp);
@@ -1132,65 +1342,62 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err)
 
     for (j = 0; j < nyb; j += step) {
         for (i = 0; i < nxb; i += step) {
-#define FPEL_NSEARCH 9 /* search points for full-pel search */
-            static int xf[FPEL_NSEARCH] = { 0, 1, -1, 0,  0, -1,  1, -1, 1 };
-            static int yf[FPEL_NSEARCH] = { 0, 0,  0, 1, -1, -1, -1,  1, 1 };
             DSV_PLANE srcp;
-            int dx, dy, bestdx, bestdy;
+            int dx, dy;
             int bx, by, bw, bh;
             int k, m, n = 0;
-            DSV_MV *inherited[32];
-            DSV_MV spatialP, spatialL, spatialT, temporal;
-            unsigned metr[4], best, score, best_score, good_enough = 0;
-            unsigned qthresh;
+            DSV_MV *cands[128];
+            unsigned metr[4], best, score_zero, score, best_score;
+            unsigned qthresh, good_enough = 0;
+            int lax = 0, lay = 0;
+            unsigned var_src, avg_src;
+            PSY_COEFS psy;
 
             bx = (i * y_w) >> level;
             by = (j * y_h) >> level;
             /* bounds check for safety */
             if ((bx >= src->width) || (by >= src->height)) {
                 DSV_MV zmv = { 0 }; /* inter with no other flag */
-                mf[i + j * nxb] = zmv;
+                mvf[i + j * nxb] = zmv;
                 continue;
             }
-
+            memset(&hme->mv_bank, 0, sizeof(hme->mv_bank));
+            hme->n_mv_bank_used = 0;
             dsv_plane_xy(src, &srcp, 0, bx, by);
             bw = MIN(srcp.w, y_w);
             bh = MIN(srcp.h, y_h);
 
-            inherited[n++] = &zero;
-            if (level == 0) {
-                /* add spatially and temporally predicted candidates */
-                int px, py;
-                dsv_movec_pred(mf, params, i, j, &px, &py);
-                spatialP.u.mv.x = DSV_SAR(px + 2, 2);
-                spatialP.u.mv.y = DSV_SAR(py + 2, 2);
-                inherited[n++] = &spatialP;
-                if (i > 0) { /* left */
-                    DSV_MV *pmv = (mf + j * params->nblocks_h + (i - 1));
-                    spatialL.u.mv.x = DSV_SAR(pmv->u.mv.x + 2, 2);
-                    spatialL.u.mv.y = DSV_SAR(pmv->u.mv.y + 2, 2);
-                    inherited[n++] = &spatialL;
-                }
-                if (j > 0) { /* top */
-                    DSV_MV *pmv = (mf + (j - 1) * params->nblocks_h + i);
-                    spatialT.u.mv.x = DSV_SAR(pmv->u.mv.x + 2, 2);
-                    spatialT.u.mv.y = DSV_SAR(pmv->u.mv.y + 2, 2);
-                    inherited[n++] = &spatialT;
-                }
-                if (hme->ref_mvf != NULL) {
-                    DSV_MV *tprev = &hme->ref_mvf[i + j * nxb];
-                    temporal.u.mv.x = DSV_SAR(tprev->u.mv.x + 2, 2);
-                    temporal.u.mv.y = DSV_SAR(tprev->u.mv.y + 2, 2);
-                    inherited[n++] = &temporal;
-                }
-            } else {
-                spatialP.u.all = 0;
-            }
+            ADD_MV_XY(cands, 0, 0);
+            if (!SQUARED_LEVELS) {
+                /* TODO this logic could use much more testing */
+                int sigmot;
+                sigmot = (abs(gx) >= 3) || (abs(gy) >= 3);
+                var_src = block_detail(srcp.data, srcp.stride, bw, bh, &avg_src);
 
+                if (var_src <= (unsigned) (8 * bw * bh * hme->quant >> 9)) {
+                    psy.err_weight = 2;
+                    psy.tex_weight = 1;
+                    psy.avg_weight = 0;
+                } else {
+                    psy.err_weight = 1;
+                    psy.tex_weight = 2;
+                    psy.avg_weight = 0;
+                }
+
+                if (sigmot) {
+                    sigmot = psy.err_weight;
+                    psy.err_weight = psy.tex_weight;
+                    psy.tex_weight = sigmot;
+                }
+            }
             if (parent != NULL) {
-#define N_POINTS (1 + 4)
-                static int pt[N_POINTS * 2] = { 0, 0,  -2, 0,   2, 0,   0, -2,   0, 2 };
+#define N_POINTS (1 + 8)
+                static int pt[N_POINTS * 2] = { 0, 0,
+                        -2,  0,   2, 0,   0, -2,    0, 2,
+                        -2, -2,   2, 2,   2, -2,   -2, 2 };
                 int x, y, pi, pj;
+                int sumx = 0, sumy = 0, npar = 0;
+                DSV_MV *lcand[16];
 
                 pi = i & parent_mask;
                 pj = j & parent_mask;
@@ -1198,85 +1405,83 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err)
                     x = pi + pt[(m << 1) + 0] * step;
                     y = pj + pt[(m << 1) + 1] * step;
                     if (x >= 0 && x < nxb && y >= 0 && y < nyb) {
-                        inherited[n++] = parent + x + y * nxb;
+                        DSV_MV *pmv = parent + x + y * nxb;
+                        sumx += pmv->u.mv.x;
+                        sumy += pmv->u.mv.y;
+                        lcand[npar] = pmv;
+                        npar++;
+                    }
+                }
+                if (npar) {
+                    int nl;
+                    DSV_MV *newl[16];
+                    lax = sumx / npar;
+                    lay = sumy / npar;
+                    nl = find_inliers(lcand, newl, npar, &lax, &lay);
+                    ADD_MV_XY(cands, lax, lay);
+
+                    n = add_spatial_predictions(level, i, j, n, cands, params, mvf, hme);
+                    n = add_temporal_predictions(level, i, j, n, cands, params, hme);
+
+                    ADD_MV_XY(cands, gx, gy);
+
+                    for (m = 0; m < nl; m++) {
+                        ADD_MV_XY(cands, newl[m]->u.mv.x, newl[m]->u.mv.y);
                     }
                 }
             }
+
             /* we only care about unique non-zero vectors */
-            n = remove_dupes(inherited, n);
-            /* find best vector */
+            n = remove_dupes(cands, n);
+
             best = 0;
-            bestdx = inherited[best]->u.mv.x;
-            bestdy = inherited[best]->u.mv.y;
-            best_score = UINT_MAX;
-            if (n > 1) {
-                for (k = 0; k < n; k++) {
-                    DSV_PLANE refp;
-                    int evx, evy, cost;
+            best_score = score_zero = UINT_MAX;
+            for (k = 0; k < n; k++) {
+                DSV_PLANE refp;
+                int evx, evy, cost;
 
-                    if (invalid_block(src, bx, by, bw, bh)) {
-                        continue;
-                    }
+                dx = DSV_SAR(cands[k]->u.mv.x, level);
+                dy = DSV_SAR(cands[k]->u.mv.y, level);
 
-                    dx = DSV_SAR(inherited[k]->u.mv.x, level);
-                    dy = DSV_SAR(inherited[k]->u.mv.y, level);
-
-                    if (invalid_block(ref, bx + dx, by + dy, bw, bh)) {
-                        continue;
-                    }
-
-                    dsv_plane_xy(ref, &refp, 0, bx + dx, by + dy);
-                    score = hier_metr(level, srcp.data, srcp.stride, refp.data, refp.stride, bw, bh);
-                    evx = MK_MV_COMP(dx, 0, 0) * step;
-                    evy = MK_MV_COMP(dy, 0, 0) * step;
-                    cost = dsv_mv_cost(mf, params, i, j, evx, evy, hme->quant, (level != 0));
-                    if (best_score > score + cost) {
-                        best_score = score;
-                        best = k;
-                    }
+                if (invalid_block(ref, bx + dx, by + dy, bw, bh)) {
+                    continue;
                 }
-                bestdx = inherited[best]->u.mv.x;
-                bestdy = inherited[best]->u.mv.y;
+
+                dsv_plane_xy(ref, &refp, 0, bx + dx, by + dy);
+                score = hier_metr(level, srcp.data, srcp.stride, refp.data, refp.stride, bw, bh, &psy);
+                evx = MK_MV_COMP(dx * step, 0, 0);
+                evy = MK_MV_COMP(dy * step, 0, 0);
+                cost = mv_cost(mvf, params, i, j, evx, evy, hme->quant, level);
+                if (best_score > score + cost) {
+                    best_score = score;
+                    best = k;
+                }
+                if (dx == 0 && dy == 0) {
+                    score_zero = score;
+                }
             }
 
-            dx = DSV_SAR(bestdx, level);
-            dy = DSV_SAR(bestdy, level);
+            dx = DSV_SAR(cands[best]->u.mv.x, level);
+            dy = DSV_SAR(cands[best]->u.mv.y, level);
+            dx = CLAMP(dx, (-bw - bx), (ref->width - bx));
+            dy = CLAMP(dy, (-bh - by), (ref->height - by));
 
-            mv = &mf[i + j * nxb];
-            mv->u.all = 0;
-            mv->flags = 0;
-            mv->submask = 0;
-            mv->dc = 0;
-            mv->err = 0;
+            mv = &mvf[i + j * nxb];
+            memset(mv, 0, sizeof(*mv));
 
-            /* full-pel search around inherited best vector */
-            {
-                int l, r, u, d;
-
-                l = -bw - bx;
-                u = -bh - by;
-                r = ref->width - bx;
-                d = ref->height - by;
-                dx = CLAMP(dx, l, r);
-                dy = CLAMP(dy, u, d);
-            }
+            /* full-pel search around best candidate vector */
             best = best_score;
             m = 0;
 
             qthresh = (unsigned) (hme->quant * bw * bh >> 10);
-            if (abs(dx) <= 1 && abs(dy) <= 1) {
-                unsigned zoscore = sse_wxh(srcp.data, sp->stride,
+            if (DO_GOOD_ENOUGH && ((abs(dx) <= 1 && abs(dy) <= 1))) {
+                /* compare to source reference frame */
+                unsigned zoscore = fastmetr(srcp.data, sp->stride,
                                     DSV_GET_XY(&ogr->planes[0], bx, by),
-                                    ogr->planes[0].stride, bw, bh);
+                                    ogr->planes[0].stride, bw, bh, &psy);
                 if (zoscore < qthresh) {
                     /* bias towards zero vector */
-                    if (level == 0) {
-                        best = hier_metr(level, srcp.data, sp->stride,
-                                DSV_GET_XY(rp, bx, by),
-                                rp->stride, bw, bh);
-                    } else {
-                        best = 0;
-                    }
+                    best = (level == 0) ? score_zero : 0;
                     dx = 0;
                     dy = 0;
                     good_enough = 1;
@@ -1284,26 +1489,26 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err)
             }
 #define FAST_DIAG 1
             if (!good_enough) {
-                n = (level != 0 || (params->effort >= 2 && !FAST_DIAG)) ? FPEL_NSEARCH : (FPEL_NSEARCH / 2 + 1);
+                n = (level != 0 || (params->effort >= 2 && !FAST_DIAG)) ? N_SEARCH_PTS : (N_SEARCH_PTS / 2 + 1);
                 for (k = 0; k < n; k++) {
                     int evx, evy, cost;
                     int tvx, tvy;
 
-                    tvx = dx + xf[k];
-                    tvy = dy + yf[k];
+                    tvx = dx + rectx[k];
+                    tvy = dy + recty[k];
                     score = hier_metr(level, srcp.data, sp->stride,
                             DSV_GET_XY(rp, bx + tvx, by + tvy),
-                            rp->stride, bw, bh);
+                            rp->stride, bw, bh, &psy);
 
                     if (FAST_DIAG && k >= 1 && k <= 4) {
                         metr[k - 1] = score;
                     }
 
-                    evx = MK_MV_COMP(dx + xf[k], 0, 0) * step;
-                    evy = MK_MV_COMP(dy + yf[k], 0, 0) * step;
-                    cost = dsv_mv_cost(mf, params, i, j, evx, evy, hme->quant, (level != 0));
-                    if (level == 0) {
-                        if ((score + cost) <= qthresh) {
+                    evx = MK_MV_COMP(tvx * step, 0, 0);
+                    evy = MK_MV_COMP(tvy * step, 0, 0);
+                    cost = mv_cost(mvf, params, i, j, evx, evy, hme->quant, level);
+                    if (DO_GOOD_ENOUGH && level == 0) {
+                        if (score <= qthresh) {
                             best = score;
                             m = k;
                             good_enough = 1;
@@ -1324,29 +1529,29 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err)
                 pri = metr[3] >= metr[2] ? 3 : 4;
                 sec = metr[1] >= metr[0] ? 1 : 2;
 
-                tv[0] = xf[pri] + xf[sec] + xf[m];
-                tv[1] = yf[pri] + yf[sec] + yf[m];
+                tv[0] = rectx[pri] + rectx[sec] + rectx[m];
+                tv[1] = recty[pri] + recty[sec] + recty[m];
                 score = hier_metr(level, srcp.data, sp->stride,
                         DSV_GET_XY(rp, bx + tv[0], by + tv[1]),
-                        rp->stride, bw, bh);
-                evx = MK_MV_COMP(tv[0], 0, 0) * step;
-                evy = MK_MV_COMP(tv[1], 0, 0) * step;
-                cost = dsv_mv_cost(mf, params, i, j, evx, evy, hme->quant, (level != 0));
+                        rp->stride, bw, bh, &psy);
+                evx = MK_MV_COMP(tv[0] * step, 0, 0);
+                evy = MK_MV_COMP(tv[1] * step, 0, 0);
+                cost = mv_cost(mvf, params, i, j, evx, evy, hme->quant, level);
                 if (best > score + cost) {
                     best = score;
                     dx = tv[0];
                     dy = tv[1];
-                    if ((score + cost) <= qthresh) {
+                    if (DO_GOOD_ENOUGH && score <= qthresh) {
                         good_enough = 1;
                     }
                 } else {
-                    dx += xf[m];
-                    dy += yf[m];
+                    dx += rectx[m];
+                    dy += recty[m];
                 }
             }
 #else
-            dx += xf[m];
-            dy += yf[m];
+            dx += rectx[m];
+            dy += recty[m];
 #endif
 
             mv->u.mv.x = dx * step;
@@ -1361,146 +1566,190 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err)
                 fpelx = mv->u.mv.x;
                 fpely = mv->u.mv.y;
 
-                if (params->effort >= 4 && !good_enough) {
-                    best = subpixel_ME(params, mf, mv, src, ref, i, j, best, hme->quant, bx, by, bw, bh);
+                if (params->effort >= 4) {
+                    int found = 0;
+                    DSV_MV tmpv;
+                    int tfpx, tfpy;
+                    /* first search local average from parents */
+                    tmpv.u.mv.x = lax;
+                    tmpv.u.mv.y = lay;
+                    tfpx = tmpv.u.mv.x;
+                    tfpy = tmpv.u.mv.y;
+
+                    best = subpixel_ME(params, mvf, &tmpv, src, ref, i, j, best_fp, hme->quant, bx, by, bw, bh, &psy, &found);
+                    if (found) {
+                        mv->u.all = tmpv.u.all;
+                        fpelx = tfpx;
+                        fpely = tfpy;
+                    } else if (!good_enough) {
+                        /* if nothing so far, search final MV from HME */
+                        best = subpixel_ME(params, mvf, mv, src, ref, i, j, best_fp, hme->quant, bx, by, bw, bh, &psy, &found);
+                    } else {
+                        mv->u.mv.x = MK_MV_COMP(fpelx, 0, 0);
+                        mv->u.mv.y = MK_MV_COMP(fpely, 0, 0);
+                    }
                 } else {
-                    mv->u.mv.x *= 4;
-                    mv->u.mv.y *= 4;
+                    mv->u.mv.x = MK_MV_COMP(fpelx, 0, 0);
+                    mv->u.mv.y = MK_MV_COMP(fpely, 0, 0);
                 }
 
                 /* mode decision + block metric gathering
-                 * _src = source block
-                 * _ogr = original ref frame block at full-pel motion (x, y)
-                 * _ref = reconstructed ref frame block at full-pel motion (x, y)
+                 * src = source block
+                 * ogr = original ref frame block at full-pel motion (x, y)
+                 * ref = reconstructed ref frame block at full-pel motion (x, y)
                  */ {
                     DSV_PLANE refp, ogrp;
-                    unsigned var_src, var_ref, avg_src, avg_ref;
+                    unsigned var_ref, avg_ref;
                     int uavg_src, vavg_src, uavg_ref, vavg_ref;
-                    int cbx, cby, cbw, cbh;
+                    int cbx, cby, cbw, cbh, cbmx, cbmy;
                     unsigned mad, ogrerr, ogrmad;
                     unsigned avg_y_dif, avg_c_dif;
                     int eprmi, eprmd, eprmr;
                     int neidif, oob_vector; /* out of bounds */
                     unsigned skipt = (quant_rd >> 19);
                     unsigned ratio = 1 << 5; /* ratio of subpel_min_err / fullpel_min_err */
+                    unsigned chroma_ratio = 1 << 4; /* ratio of chroma block size to luma block size */
+                    int ipolvar, dv;
+                    CHROMA_PSY cpsy;
                     DSV_MV *refmv = NULL;
-
+                    if (hme->ref_mvf != NULL) {
+                        refmv = &hme->ref_mvf[i + j * nxb];
+                    }
                     if (DSV_IS_SUBPEL(mv)) {
                         ratio = (best << 5) / (best_fp + !best_fp);
                     }
-
                     dsv_plane_xy(ogr, &ogrp, 0, bx + fpelx, by + fpely);
                     dsv_plane_xy(ref, &refp, 0, bx + fpelx, by + fpely);
-                    ogrerr = fastmetr(srcp.data, srcp.stride, ogrp.data, ogrp.stride, bw, bh);
+                    ogrerr = fastmetr(srcp.data, srcp.stride, ogrp.data, ogrp.stride, bw, bh, &psy);
                     ogrmad = DSV_UDIV_ROUND(ogrerr, yarea);
                     ogrmad = (ogrmad * ratio >> 5);
                     mad = DSV_UDIV_ROUND(best, yarea);
 
                     var_src = block_detail(srcp.data, srcp.stride, bw, bh, &avg_src);
                     var_ref = block_detail(refp.data, refp.stride, bw, bh, &avg_ref);
+                    /* weigh variance between src and ref by how much better the subpixel ME was */
+                    dv = MIN(ratio, 32);
+                    ipolvar = (var_src * dv + var_ref * (32 - dv)) >> 5;
+                    dv = ABSDIF(var_src, ipolvar);
 
-                    avg_y_dif = ABSDIF(avg_src, avg_ref);
+                    DSV_MV_SET_MAINTAIN(mv, (var_src > 16 * yarea) && (var_src < 32 * yarea));
+
                     cbx = i * (y_w >> hs);
                     cby = j * (y_h >> vs);
+                    cbmx = cbx + DSV_SAR(fpelx, hs);
+                    cbmy = cby + DSV_SAR(fpely, vs);
                     cbw = bw >> hs;
                     cbh = bh >> vs;
+                    chroma_ratio = ((cbw * cbh) << 4) / yarea;
+
                     c_average(sp, cbx, cby, cbw, cbh, &uavg_src, &vavg_src);
-                    c_average(rp,
-                            cbx + DSV_SAR(fpelx, hs),
-                            cby + DSV_SAR(fpely, vs),
-                            cbw, cbh, &uavg_ref, &vavg_ref);
+                    c_average(rp, cbmx, cbmy, cbw, cbh, &uavg_ref, &vavg_ref);
+
+                    chroma_analysis(&cpsy, avg_src, uavg_src, vavg_src);
+
+                    avg_y_dif = ABSDIF(avg_src, avg_ref);
                     avg_c_dif = AVG2(abs(uavg_src - uavg_ref), abs(vavg_src - vavg_ref));
 
-                    calc_EPRM(&srcp, &refp, avg_src, bw, bh, &eprmi, &eprmd, &eprmr);
+                    calc_EPRM(&srcp, &refp, avg_src, avg_ref, bw, bh, &eprmi, &eprmd, &eprmr);
                     DSV_MV_SET_SIMCMPLX(mv, 0);
 
                     oob_vector = outofbounds(i, j, nxb, nyb, y_w, y_h, mv);
+                    neidif = dsv_neighbordif(mvf, params, i, j);
 
-                    if (hme->enc->skip_block_thresh >= 0 && !params->lossless) {
-                        unsigned sth = skipt * yarea;
-                        unsigned zerr[3], zsub[3][4];
-                        unsigned mag, ysub;
+                    /* test skip mode */
+                    if (mv->u.all == 0 && hme->enc->skip_block_thresh >= 0 && !params->lossless) {
+                        unsigned cth, sth = skipt * yarea;
+                        unsigned zsub[3], dcd;
 
-                        mag = MV_MAG(mv);
-                        if (mv->u.all == 0) {
-                            sth += 4 * var_src;
-                        }
-                        sth += var_src / MAX(mag, 1);
+                        sth += 4 * var_src;
+
                         sth += yarea * hme->enc->skip_block_thresh;
                         if (hme->quant < (1 << (DSV_MAX_QP_BITS - 2))) {
                             sth = sth * hme->quant >> (DSV_MAX_QP_BITS - 2);
                         }
-                        yuv_err(zerr, zsub, src, ref, bx, by, bw, bh, cbx, cby, cbw, cbh);
-                        ysub = MAX(MAX(zsub[0][0], zsub[0][1]), MAX(zsub[0][2], zsub[0][3]));
-                        if (((ysub * 4)) <= sth / 2 && zerr[1] <= sth / 8 && zerr[2] <= sth / 8) {
+                        if (avg_y_dif <= 2) {
+                            sth = MAX(sth, 3 * (yarea + var_src));
+                        }
+                        sth = MAX(sth, yarea);
+                        if (good_enough) {
+                            sth *= 2;
+                        }
+                        yuv_max_subblock_err(zsub, src, ref,
+                                bx, by, bx, by, bw, bh,
+                                cbx, cby, cbx, cby, cbw, cbh, &psy);
+                        cth = (chroma_ratio * sth * MAX(skipt, 1) >> (4 + 1));
+                        dcd = ABSDIF(avg_src, avg_ref);
+                        zsub[0] += SQR(dcd) * yarea;
+                        if (zsub[0] <= sth && zsub[1] <= cth && zsub[2] <= cth) {
                             DSV_MV_SET_SKIP(mv, 1);
                             mv->err = 0;
                             /* don't bother with anything else if we're skipping the block anyway */
                             goto skip;
                         }
                     }
-                    neidif = dsv_neighbordif(mf, params, i, j);
-
+                    /* see if we can afford to zero out the residuals */
                     if (!oob_vector && !params->lossless) {
                         int y_prereq, c_prereq;
+                        int utex, vtex, carea = 4 * cbw * cbh;
+
+                        utex = block_tex(sp[1].data + cbx + cby * sp[1].stride, sp[1].stride, cbw, cbh);
+                        vtex = block_tex(sp[2].data + cbx + cby * sp[2].stride, sp[2].stride, cbw, cbh);
+
                         y_prereq = (avg_y_dif <= 2);
-                        c_prereq = (avg_c_dif <= 2);
+                        c_prereq = (utex > carea || vtex > carea) &&
+                                !cpsy.greyish && (avg_c_dif <= 2);
                         if (y_prereq || c_prereq) {
-                            unsigned mag, ysub, usub, vsub;
-                            unsigned berr[3], bsub[3][4];
+                            unsigned bsub[3];
                             unsigned xth = skipt * yarea;
                             /* don't transmit residuals if the differences are minimal */
-                            yuv_err(berr, bsub, src, ref,
-                                    bx + fpelx, by + fpely, bw, bh,
-                                    cbx + DSV_SAR(fpelx, hs), cby + DSV_SAR(fpely, vs), cbw, cbh);
-                            mag = MV_MAG(mv);
-                            xth += var_src / (mag + 4);
-                            xth = MAX((int) xth - ((int) yarea * (neidif * 2)), 0);
+                            yuv_max_subblock_err(bsub, src, ref,
+                                    bx, by, bx + fpelx, by + fpely, bw, bh,
+                                    cbx, cby, cbmx, cbmy, cbw, cbh, &psy);
+
+                            xth += ipolvar;
+                            xth = MAX((int) xth - ((int) yarea * neidif * 2), 0);
+
                             xth = xth * hme->quant >> DSV_MAX_QP_BITS;
+                            xth = CLAMP(xth, 32, yarea * 4);
+                            bsub[0] = (bsub[0] * ratio >> 5);
+                            bsub[1] = (bsub[1] * ratio >> 5);
+                            bsub[2] = (bsub[2] * ratio >> 5);
 
-                            ysub = MAX(MAX(bsub[0][0], bsub[0][1]), MAX(bsub[0][2], bsub[0][3]));
-                            usub = MAX(MAX(bsub[1][0], bsub[1][1]), MAX(bsub[1][2], bsub[1][3]));
-                            vsub = MAX(MAX(bsub[2][0], bsub[2][1]), MAX(bsub[2][2], bsub[2][3]));
-                            ysub = (ysub * ratio >> 5);
-                            usub = (usub * ratio >> 5);
-                            vsub = (vsub * ratio >> 5);
-
-                            if (y_prereq && ysub <= xth) {
+                            if (y_prereq && bsub[0] < 4 * xth) {
                                 DSV_MV_SET_NOXMITY(mv, 1);
                             }
-                            xth = ((cbw * cbh) * xth / yarea) / 2;
-                            if (c_prereq && usub <= xth && vsub <= xth) {
+                            xth = chroma_ratio * xth >> 4;
+                            if (c_prereq && bsub[1] < xth && bsub[2] < xth) {
                                 DSV_MV_SET_NOXMITC(mv, 1);
                             }
                         }
-
 #if NO_RESIDUALS
                         DSV_MV_SET_NOXMITY(mv, 1);
 #if NO_RESIDUALS == 2
                         DSV_MV_SET_NOXMITC(mv, 1);
 #endif
 #endif
-                        if (similar_complexity(var_ref, var_src, (1 << 1))) {
+                        if ((unsigned) dv < (var_src / 4)) {
                             /* similar enough complexity to enable P-frame visual masking */
                             DSV_MV_SET_SIMCMPLX(mv, 1);
                         }
                     }
-                    if (hme->ref_mvf != NULL) {
-                        refmv = &hme->ref_mvf[i + j * nxb];
-                    }
+
 #if 1 /* have intra blocks */
                     test_subblock_intra_y(params, refmv, mv,
                                           &srcp, &refp,
-                                          var_src, avg_src, neidif, ratio,
+                                          ipolvar, avg_src, neidif, ratio,
                                           bw, bh);
-                    test_subblock_intra_c(i, j, params, mv,
-                                          mad, var_src, avg_src,
-                                          fpelx, fpely,
-                                          sp, rp, y_w, y_h, bw, bh);
+                    test_subblock_intra_c(params, mv, sp, rp,
+                                          mad, ipolvar / (bw * bh), avg_src,
+                                          cbx, cby, cbmx, cbmy,
+                                          cbw, cbh);
 #endif
                     /* end-of-block stats */
-                    mv->err = mad;
-                    total_err += mad;
+                    if (!DSV_MV_IS_NOXMITY(mv)) {
+                        mv->err = mad;
+                        total_err += mad;
+                    }
                     /* more difference, more likely to need a scene change */
                     ndiff += (ogrmad > 11) + (avg_c_dif >= 32);
 skip:
@@ -1514,6 +1763,9 @@ skip:
                         }
                         DSV_MV_SET_EPRM(mv, !!merged);
                         nintra++;
+                        /* intra does not have subpel precision */
+                        mv->u.mv.x = MK_MV_COMP(fpelx, 0, 0);
+                        mv->u.mv.y = MK_MV_COMP(fpely, 0, 0);
                     } else {
                         int merged = eprmr;
                         if (mv->submask) {
@@ -1521,7 +1773,6 @@ skip:
                         }
                         DSV_MV_SET_EPRM(mv, !!merged);
                     }
-
                     if (DSV_MV_IS_INTRA(mv) || DSV_MV_IS_EPRM(mv)) {
                         DSV_MV_SET_SIMCMPLX(mv, 0); /* don't do this for intra/eprm to retain precision */
                     }
@@ -1555,7 +1806,6 @@ dsv_intra_analysis(DSV_FRAME *src, DSV_PARAMS *params)
 
     ba = dsv_alloc(nxb * nyb * sizeof(DSV_MV));
 
-#define SPSCALE(x) ((x) * scale >> 7)
     scale = 2 * dsv_spatial_psy_factor(params, -1);
     for (j = 0; j < nyb; j++) {
         for (i = 0; i < nxb; i++) {
@@ -1567,7 +1817,6 @@ dsv_intra_analysis(DSV_FRAME *src, DSV_PARAMS *params)
             CHROMA_PSY cpsy;
             int maintain = 1;
             int keep_hf = 1;
-            int hvar, qtex;
             int npeaks = 0;
             int foliage = 0;
             int is_text = 0;
@@ -1597,15 +1846,16 @@ dsv_intra_analysis(DSV_FRAME *src, DSV_PARAMS *params)
 
             luma_detail = block_detail(srcp.data, srcp.stride, bw, bh, &luma_avg);
 
-            hvar = block_hist_var(srcp.data, srcp.stride, bw, bh, hist);
-            qtex = quant_tex(srcp.data, srcp.stride, bw, bh);
-
             if (params->do_psy & (DSV_PSY_ADAPTIVE_RINGING | DSV_PSY_CONTENT_ANALYSIS)) {
                 int skip_tones;
                 int uavg, vavg;
                 int tf = 0;
                 int tf2 = 0;
+                int qtex, hvar;
                 int luma_var, luma_tex;
+
+                hvar = block_hist_var(srcp.data, srcp.stride, bw, bh, hist);
+                qtex = quant_tex(srcp.data, srcp.stride, bw, bh);
 
                 luma_var = block_var(srcp.data, srcp.stride, bw, bh, &luma_avg);
                 luma_var /= (bw * bh);
@@ -1665,11 +1915,6 @@ dsv_intra_analysis(DSV_FRAME *src, DSV_PARAMS *params)
                     keep_hf = 1;
                     maintain = 0;
                 }
-                /* hifreq chroma, don't care about it */
-                if (cpsy.hifreq) {
-                    maintain = 0;
-                    keep_hf = 0;
-                }
             }
             if (params->do_psy & DSV_PSY_ADAPTIVE_RINGING) {
                 if (luma_avg < 24) {
@@ -1682,15 +1927,41 @@ dsv_intra_analysis(DSV_FRAME *src, DSV_PARAMS *params)
     }
     return ba;
 }
+static void
+global_motion(DSV_MV *vecs, DSV_PARAMS *p, int level, int *gx, int *gy)
+{
+    int i, j;
+    int avgx = 0, avgy = 0;
+    int nblk = 0;
+    DSV_MV *mv;
+    int step;
+    step = 1 << level;
+
+    for (j = 0; j < p->nblocks_v; j += step) {
+        for (i = 0; i < p->nblocks_h; i += step) {
+            mv = &vecs[i + j * p->nblocks_h];
+
+            avgx += mv->u.mv.x;
+            avgy += mv->u.mv.y;
+            nblk++;
+        }
+    }
+    *gx = avgx * 2 / nblk; /* scale up for next highest level */
+    *gy = avgy * 2 / nblk;
+}
 
 extern int
 dsv_hme(DSV_HME *hme, int *scene_change_blocks, int *avg_err)
 {
     int i = hme->enc->pyramid_levels;
     int nintra = 0;
+    int globalx = 0, globaly = 0;
 
     while (i >= 0) {
-        nintra = refine_level(hme, i, scene_change_blocks, avg_err);
+        nintra = refine_level(hme, i, scene_change_blocks, avg_err, globalx, globaly);
+        if (i != 0) {
+            global_motion(hme->mvf[i], hme->params, i, &globalx, &globaly);
+        }
         i--;
     }
     return (nintra * 100) / (hme->params->nblocks_h * hme->params->nblocks_v);
