@@ -22,6 +22,9 @@
 #define EOP_SYMBOL 0x55 /* B.2.3.5 Image Data - Coefficient Coding */
 
 #define MAXLVL   3
+#define LVL1     (MAXLVL - 1) /* highest freq */
+#define LVL2     (MAXLVL - 2) /* second highest freq */
+#define LVL3     (MAXLVL - 3) /* third highest freq */
 #define NSUBBAND 4 /* 0 = LL, 1 = LH, 2 = HL, 3 = HH */
 #define LH       1
 #define HL       2
@@ -124,16 +127,16 @@ hfquant(DSV_FMETA *fm, int q, int s, int l)
         q = (q * 6) / (4 - tl);
     } else {
         /* reduce higher frequencies appropriately */
-        if (l == (MAXLVL - 2)) {
+        if (l == LVL2) {
             q += psyfac / 2;
-        } else if (l == (MAXLVL - 1)) {
+        } else if (l == LVL1) {
             q += psyfac;
         }
     }
 
     if (fm->isP) {
-        if (l != (MAXLVL - 1)) {
-            if (l == (MAXLVL - 3)) {
+        if (l != LVL1) {
+            if (l == LVL3) {
                 q *= 2;
                 q -= psyfac;
             } else {
@@ -144,7 +147,7 @@ hfquant(DSV_FMETA *fm, int q, int s, int l)
     }
     q = q * (15 + 3 * l) / 16;
     if (!chroma) {
-        if (l == (MAXLVL - 3)) { /* luma level 3 (Haar) needs to be quantized less */
+        if (l == LVL3) { /* luma level 3 (Haar) needs to be quantized less */
             q = (q * 3) / 8;
         } else if (s == HH) { /* quantize HH more */
             q *= 2;
@@ -204,18 +207,6 @@ hfquant(DSV_FMETA *fm, int q, int s, int l)
 
 
 #define quantSUB(v, q, sub) ((((v) >= 0 ? (v) - (sub) : (v) + (sub)) / (q)))
-
-static int
-quantRI(int v, int q)
-{
-    if (abs(v) < q * 7 / 8) {
-        return 0;
-    }
-    if (v < 0) {
-        return (v - (q / 3)) / q;
-    }
-    return (v + (q / 3)) / q;
-}
 
 #define quantS(v, q) ((v) / (q))
 
@@ -317,7 +308,11 @@ hzcc_enc(DSV_BS *bs, DSV_SBC *src, int w, int h, int q, DSV_FMETA *fm)
         /* C.2.3 LL Subband */
         for (y = 0; y < sh; y++) {
             for (x = 0; x < sw; x++) {
-                v = quantS(srcp[x], qp);
+                if (!fm->isP) {
+                    v = quantSUB(srcp[x], qp, -(qp / 6));
+                } else {
+                    v = quantS(srcp[x], qp);
+                }
                 if (v) {
                     srcp[x] = dequantL(v, qp);
                     dsv_bs_put_ueg(bs, run);
@@ -333,19 +328,21 @@ hzcc_enc(DSV_BS *bs, DSV_SBC *src, int w, int h, int q, DSV_FMETA *fm)
         }
         for (l = 0; l < MAXLVL; l++) {
             uint8_t *blockrow;
-            DSV_SBC *parent;
-            int psyluma;
+            DSV_MV *mvrow;
+            int psyI, psyP;
 
             sw = dimat(l, w);
             sh = dimat(l, h);
             dbx = (fm->params->nblocks_h << DSV_BLOCK_INTERP_P) / sw;
             dby = (fm->params->nblocks_v << DSV_BLOCK_INTERP_P) / sh;
             qp = q;
-            psyluma = (fm->params->do_psy & (isP ? DSV_PSY_P_VISUAL_MASKING : DSV_PSY_I_VISUAL_MASKING))
-                        && !fm->cur_plane && (l != (MAXLVL - 3));
+            psyI = (fm->params->do_psy & DSV_PSY_I_VISUAL_MASKING) && !fm->cur_plane;
+            psyP = (fm->params->do_psy & DSV_PSY_P_VISUAL_MASKING) && !fm->cur_plane;
             /* C.2.4 Higher Level Subbands */
             for (s = 1; s < NSUBBAND; s++) {
-                int par;
+                int gpar, par;
+                DSV_SBC *gparent, *parent;
+                gpar = subband(l - 2, s, w, h);
                 par = subband(l - 1, s, w, h);
                 o = subband(l, s, w, h);
                 qp = hfquant(fm, q, s, l);
@@ -355,38 +352,72 @@ hzcc_enc(DSV_BS *bs, DSV_SBC *src, int w, int h, int q, DSV_FMETA *fm)
                 for (y = 0; y < sh; y++) {
                     bx = 0;
                     blockrow = fm->blockdata + (by >> DSV_BLOCK_INTERP_P) * fm->params->nblocks_h;
+                    mvrow = fm->mvs + (by >> DSV_BLOCK_INTERP_P) * fm->params->nblocks_h;
+                    gparent = src + gpar + (((y >> 2)) * w);
                     parent = src + par + ((y >> 1) * w);
                     for (x = 0; x < sw; x++) {
                         int tmq = qp;
                         int flags = blockrow[bx >> DSV_BLOCK_INTERP_P];
+                        DSV_MV *mv = &mvrow[bx >> DSV_BLOCK_INTERP_P];
+                        int gparc = gparent[x >> 2];
                         int parc = parent[x >> 1];
+
+                        int texture = !parc; /* texture has no parent, edge has parent */
+                        int gtexture = !gparc; /* texture has no parent, edge has parent */
                         if (isP) {
                             TMQ4POS_P(tmq, flags);
-                            if (psyluma && (flags & DSV_IS_SIMCMPLX)) {
-                                v = quantSUB(srcp[x], tmq, tmq >> 2);
+#define MV_LT(v, t) (abs((v)->u.mv.x) < (t) && abs((v)->u.mv.y) < (t)) /* less than */
+
+                            if (psyP) {
+                                if ((gtexture && texture) || DSV_MV_IS_EPRM(mv) || (DSV_MV_IS_MAINTAIN(mv) && MV_LT(mv, 32))) {
+                                    v = quantSUB(srcp[x], tmq, tmq >> 3);
+                                } else {
+                                    if (texture || !(flags & DSV_IS_SIMCMPLX)) {
+                                        v = quantSUB(srcp[x], tmq, tmq / 6);
+                                    } else {
+                                        v = quantSUB(srcp[x], tmq, tmq >> 2);
+                                    }
+                                }
                             } else {
                                 v = quantS(srcp[x], tmq);
                             }
                         } else {
                             TMQ4POS_I(tmq, flags, l);
                             /* psychovisual: visual masking */
-                            if (psyluma && !(flags & DSV_IS_STABLE)) {
-                                v = 0;
-                                if (srcp[x]) {
-                                    if (parc) {
-                                        int absrc, tm;
+                            if (psyI) {
+#define sign(x) ((x) < 0 ? -1 : (x) > 0 ? 1 : 0)
+                                int edge, stp, smf;
 
-                                        absrc = abs(srcp[x]);
-                                        tm = (q * abs(parc) / absrc) >> (7 - l);
-                                        if (tm < tmq && tm < absrc) {
-                                            v = quantSUB(srcp[x], tmq, tm);
-                                        }
-                                    } else {
-                                        v = quantRI(srcp[x], tmq);
+                                smf = flags & (DSV_IS_MAINTAIN | DSV_IS_STABLE);
+
+                                if (flags & DSV_IS_RINGING) {
+                                    v = quantSUB(srcp[x], tmq, -(tmq / 6));
+                                } else {
+                                    switch (l) {
+                                        case LVL3:
+                                            v = quantSUB(srcp[x], tmq, -(tmq >> 3));
+                                            break;
+                                        default:
+                                        case LVL1:
+                                        case LVL2:
+                                            edge = sign(parc) == sign(srcp[x]);
+                                            if (smf == 0) {
+                                                stp = -tmq / 3;
+                                            } else if (edge && (smf == DSV_IS_STABLE)) {
+                                                stp = tmq >> 3;
+                                            } else {
+                                                stp = -tmq / 6;
+                                            }
+                                            v = quantSUB(srcp[x], tmq, stp);
+                                            break;
                                     }
                                 }
                             } else {
-                                v = quantS(srcp[x], tmq);
+                                if (fm->cur_plane) {
+                                    v = quantSUB(srcp[x], tmq, -(tmq >> 3));
+                                } else {
+                                    v = quantS(srcp[x], tmq);
+                                }
                             }
                         }
                         if (v) {
