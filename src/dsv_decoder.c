@@ -108,64 +108,62 @@ decode_motion(DSV_IMAGE *img, DSV_MV *mvs, DSV_BS *inbs, DSV_BUF *buf, int *stat
     for (j = 0; j < params->nblocks_v; j++) {
         for (i = 0; i < params->nblocks_h; i++) {
             DSV_MV *mv;
-            int mode, eprm, idx;
+            int idx;
             idx = i + j * params->nblocks_h;
             mv = &mvs[idx];
-            mode = dsv_bs_get_rle(&rle);
-            eprm = dsv_bs_get_rle(&prrle);
-            if (stats[DSV_MODE_STAT] == DSV_ZERO_MARKER) {
-                mode = !mode;
-            }
-            if (stats[DSV_EPRM_STAT] == DSV_ZERO_MARKER) {
-                eprm = !eprm;
-            }
 
-            DSV_MV_SET_INTRA(mv, mode);
-            DSV_MV_SET_EPRM(mv, eprm);
-            img->blockdata[idx] &= ~(1 << DSV_STABLE_BIT);
-            img->blockdata[idx] |= eprm << DSV_EPRM_BIT;
             if (img->blockdata[idx] & DSV_IS_SKIP) {
                 DSV_MV_SET_SKIP(mv, 1);
+                mv->u.all = 0;
+                img->blockdata[idx] |= (1 << DSV_STABLE_BIT);
             } else {
+                /* B.2.3.4 Motion Data - Motion Vector Prediction */
+                int mode, eprm, px, py;
+
                 DSV_MV_SET_SKIP(mv, 0);
-            }
-            /* B.2.3.4 Motion Data - Motion Vector Prediction */
-            if (!DSV_MV_IS_SKIP(mv)) {
-                int px, py;
+
+                mode = dsv_bs_get_rle(&rle);
+                eprm = dsv_bs_get_rle(&prrle);
+                if (stats[DSV_MODE_STAT] == DSV_ZERO_MARKER) {
+                    mode = !mode;
+                }
+                if (stats[DSV_EPRM_STAT] == DSV_ZERO_MARKER) {
+                    eprm = !eprm;
+                }
+
+                DSV_MV_SET_INTRA(mv, mode);
+                DSV_MV_SET_EPRM(mv, eprm);
+                img->blockdata[idx] &= ~(1 << DSV_STABLE_BIT);
+                img->blockdata[idx] |= eprm << DSV_EPRM_BIT;
 
                 dsv_movec_pred(mvs, params, i, j, &px, &py);
                 if (DSV_MV_IS_INTRA(mv)) {
-                    px = DSV_SAR(px, 2);
-                    py = DSV_SAR(py, 2);
+                    px = DSV_SAR_R(px, 2);
+                    py = DSV_SAR_R(py, 2);
                 }
                 mv->u.mv.x = dsv_bs_get_seg(bs + DSV_SUB_MV_X) + px;
                 mv->u.mv.y = dsv_bs_get_seg(bs + DSV_SUB_MV_Y) + py;
                 if (DSV_MV_IS_INTRA(mv)) {
-                    mv->u.mv.x *= 4;
+                    mv->u.mv.x *= 4; /* rescale to qpel */
                     mv->u.mv.y *= 4;
+
+                    /* B.2.3.4 Motion Data - Intra Sub-Block Mask Decoding */
+                    if (dsv_bs_get_bit(bs + DSV_SUB_SBIM)) {
+                        mv->submask = DSV_MASK_ALL_INTRA;
+                    } else {
+                        mv->submask = dsv_bs_get_bits(bs + DSV_SUB_SBIM, 4);
+                    }
+                    if (dsv_bs_get_bit(bs + DSV_SUB_SBIM)) {
+                        mv->dc = dsv_bs_get_bits(bs + DSV_SUB_SBIM, 8) | DSV_SRC_DC_PRED;
+                    } else {
+                        mv->dc = 0;
+                    }
+                    img->blockdata[idx] |= DSV_IS_INTRA;
                 }
                 if (dsv_neighbordif(mvs, params, i, j) > DSV_NDIF_THRESH) {
                     img->blockdata[idx] |= (1 << DSV_STABLE_BIT);
                 }
-            } else {
-                mv->u.mv.x = 0;
-                mv->u.mv.y = 0;
-                img->blockdata[idx] |= (1 << DSV_STABLE_BIT);
-            }
 
-            if (DSV_MV_IS_INTRA(mv)) {
-                /* B.2.3.4 Motion Data - Intra Sub-Block Mask Decoding */
-                if (dsv_bs_get_bit(bs + DSV_SUB_SBIM)) {
-                    mv->submask = DSV_MASK_ALL_INTRA;
-                } else {
-                    mv->submask = dsv_bs_get_bits(bs + DSV_SUB_SBIM, 4);
-                }
-                if (dsv_bs_get_bit(bs + DSV_SUB_SBIM)) {
-                    mv->dc = dsv_bs_get_bits(bs + DSV_SUB_SBIM, 8) | DSV_SRC_DC_PRED;
-                } else {
-                    mv->dc = 0;
-                }
-                img->blockdata[idx] |= DSV_IS_INTRA;
             }
         }
     }
@@ -322,7 +320,7 @@ draw_info(DSV_IMAGE *img, DSV_FRAME *dst, DSV_MV *mvs, int mode, int isP)
                     }
                 }
             }
-            if (mv && isP && (mode & DSV_DRAW_MOVECS)) {
+            if (mv && isP && (mode & DSV_DRAW_MOVECS) && !(img->blockdata[i + j * p->nblocks_h] & DSV_IS_SKIP)) {
                 drawvec(lp, x, y, mv->u.mv.x, mv->u.mv.y, bw, bh);
             }
             if (mv && isP && (mode & DSV_DRAW_IBLOCK)) {
