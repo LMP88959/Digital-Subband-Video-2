@@ -23,7 +23,7 @@ extern "C" {
 
 #include "dsv_internal.h"
 
-#define DSV_ENCODER_VERSION 12
+#define DSV_ENCODER_VERSION 14
 
 #define DSV_GOP_INTRA 0
 #define DSV_GOP_INF   INT_MAX
@@ -63,7 +63,6 @@ typedef struct _DSV_ENCDATA {
     struct _DSV_ENCDATA *refdata;
 
     DSV_MV *final_mvs;
-    int avg_err;
 } DSV_ENCDATA;
 
 typedef struct {
@@ -114,6 +113,39 @@ typedef struct {
     unsigned stable_refresh; /* # frames after which stability accum resets */
     int pyramid_levels;
 
+    struct DSV_STATS {
+        unsigned inum; /* num I frames */
+        unsigned pnum; /* num P frames */
+        unsigned iqual; /* total I frame quality */
+        unsigned pqual; /* total P frame quality */
+        unsigned iminq; /* min I frame quality */
+        unsigned pminq; /* min P frame quality */
+        unsigned imaxq; /* max I frame quality */
+        unsigned pmaxq; /* max P frame quality */
+        unsigned isize; /* total I frame size (bytes) */
+        unsigned psize; /* total P frame size (bytes) */
+        unsigned imins; /* min I frame size (bytes) */
+        unsigned pmins; /* min P frame size (bytes) */
+        unsigned imaxs; /* max I frame size (bytes) */
+        unsigned pmaxs; /* max P frame size (bytes) */
+        unsigned mb; /* total macroblocks (I + P) */
+        unsigned mbI; /* total intra macroblocks */
+        unsigned mbP; /* total inter macroblocks */
+        unsigned mbdc; /* total macroblocks with DC prediction */
+        unsigned mbsub; /* total intra macroblocks that are not all intra */
+        unsigned mbsubs[4]; /* subblock intra counts */
+        unsigned eprm; /* total macroblocks with EPRM */
+        unsigned skip; /* total skipped macroblocks */
+        unsigned fpx; /* total full-pel (not subpixel) motion vectors (X dir) */
+        unsigned hpx; /* total half-pel motion vectors (X dir) */
+        unsigned qpx; /* total quarter-pel motion vectors (X dir) */
+        unsigned fpy; /* total full-pel (not subpixel) motion vectors (Y dir) */
+        unsigned hpy; /* total half-pel motion vectors (Y dir) */
+        unsigned qpy; /* total quarter-pel motion vectors (Y dir) */
+        unsigned ifnum; /* number of filtered I frames */
+        unsigned pfnum; /* number of filtered P frames */
+    } stats;
+
     /* used internally */
     unsigned rc_qual;
     /* bpf = bytes per frame
@@ -126,7 +158,13 @@ typedef struct {
     int avg_P_frame_q;
     int prev_complexity;
     int curr_complexity;
+    int curr_avgmot;
     int curr_intra_pct;
+    int curr_scblocks;
+    int prev_chaos;
+    int motion_chaos;
+    int motion_static;
+    int avg_err;
     int auto_filter;
 
     void (*frame_callback)(DSV_META *m, DSV_FRAME *orig, DSV_FRAME *recon);
@@ -168,6 +206,8 @@ typedef struct {
     DSV_FRAME *ogr[DSV_MAX_PYRAMID_LEVELS + 1]; /* original reference frame */
     DSV_MV *mvf[DSV_MAX_PYRAMID_LEVELS + 1];
     DSV_MV *ref_mvf;
+    DSV_MV mv_bank[128];
+    int n_mv_bank_used;
     DSV_ENCODER *enc;
     int quant;
 } DSV_HME;
