@@ -74,6 +74,9 @@ extern "C" {
 #define DSV_SAR(v, s) ((v) >> (s))
 #endif
 
+/* rounding version */
+#define DSV_SAR_R(v, s) DSV_SAR((v) + (1 << ((s) - 1)), (s))
+
 #define DSV_FMT_FULL_V 0x0
 #define DSV_FMT_DIV2_V 0x1
 #define DSV_FMT_DIV4_V 0x2
