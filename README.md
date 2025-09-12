@@ -1,5 +1,3 @@
-
-https://github.com/user-attachments/assets/6e47ba05-33ab-4eec-80c6-9d5f033d2b91
 # Digital-Subband-Video-2
 ------
 
