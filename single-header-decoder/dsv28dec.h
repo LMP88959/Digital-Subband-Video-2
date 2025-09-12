@@ -2668,7 +2668,7 @@ reconstruct(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_PLANE *refp, DSV_PLANE *resp
         y = j * bh;
         for (i = 0; i < p->nblocks_h; i++) {
             int m, n;
-            int dx, dy, px, py;
+            int px, py;
             uint8_t *res, *out, *pred;
 
             x = i * bw;
@@ -2678,11 +2678,8 @@ reconstruct(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_PLANE *refp, DSV_PLANE *resp
             out = DSV_GET_XY(outp, x, y);
             pred = temp;
 
-            dx = DSV_SAR(mv->u.mv.x, sh);
-            dy = DSV_SAR(mv->u.mv.y, sv);
-
-            px = x + DSV_SAR(dx, 2);
-            py = y + DSV_SAR(dy, 2);
+            px = x + DSV_SAR(mv->u.mv.x, 2 + sh);
+            py = y + DSV_SAR(mv->u.mv.y, 2 + sv);
 
             if (DSV_MV_IS_INTRA(mv)) {
                 /* D.2 Compensating Intra Blocks */
@@ -2715,8 +2712,8 @@ reconstruct(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_PLANE *refp, DSV_PLANE *resp
                     sbh = bh / 2;
                     mask_index = 0;
 
-                    for (g = 0; g <= sbh; g += sbh) {
-                        for (f = 0; f <= sbw; f += sbw) {
+                    for (g = 0; g <= sbh; g += (sbh + !sbh)) {
+                        for (f = 0; f <= sbw; f += (sbw + !sbw)) {
                             dec = temp + f + g * DSV_MAX_BLOCK_SIZE;
                             if (mv->submask & masks[mask_index]) {
                                 if (c == 0 && mv->dc) { /* DC is only for luma */
