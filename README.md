@@ -1,3 +1,5 @@
+
+https://github.com/user-attachments/assets/6e47ba05-33ab-4eec-80c6-9d5f033d2b91
 # Digital-Subband-Video-2
 ------
 
@@ -176,13 +178,13 @@ itch.io: https://kingscrook.itch.io/kings-crook
 ------
 ## Example videos:
 
-All videos are encoded at 29.97fps with a GOP length of 60.
+All videos below are encoded at 29.97fps with a GOP length of 60.
 The H.264 file sizes were within a few kilobytes of their respective DSV2 file size.
-H.264 examples were encoded using https://github.com/lieff/minih264 using -speed0 (best quality)
+H.264 examples were encoded using https://github.com/lieff/minih264 using -speed0 (best quality) *unless otherwise stated*
 DSV2 examples were encoded with -effort=10 (best quality)
 ------
 
-Husky CIF
+Husky CIF - 29.97fps, GOP = 60
 minih264:
 
 
@@ -203,7 +205,7 @@ https://github.com/user-attachments/assets/b0975e1d-74f9-4322-bbeb-0edbd81bba39
 
 ------
 
-Mobile CIF
+Mobile CIF - 29.97fps, GOP = 60
 minih264:
 
 
@@ -220,4 +222,25 @@ DSV2:
 https://github.com/user-attachments/assets/fa2861d8-4e50-47fb-b523-41ac7ee1dd5b
 
 
+
+
+------
+
+Parkrun 1280x720 - 50fps, GOP = 250
+
+minih264:
+
+
+https://github.com/user-attachments/assets/bcc408bd-6d5b-4725-b26e-307eee21ba56
+
+x264 (encoded via ffmpeg with `-c:v libx264 -preset superfast -crf 29.8 -refs 1 -coder vlc -bf 0 -g 250`):
+
+
+https://github.com/user-attachments/assets/a59c4027-4d6e-4b82-929b-4e344ca931d8
+
+DSV2:
+(Note this video here had to be re-encoded to fit under 10MB. I re-encoded with x264 CRF 22.5 with the veryslow preset)
+
+
+https://github.com/user-attachments/assets/66f91774-be8b-4c94-8cce-68e27f98c5c8
 
