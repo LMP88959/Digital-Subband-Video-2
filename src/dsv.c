@@ -358,12 +358,14 @@ extern int
 dsv_mv_cost(DSV_MV *vecs, DSV_PARAMS *p, int i, int j, int mx, int my, int q, int sqr)
 {
     int px, py, bits;
+    int b2sr;
 
     dsv_movec_pred(vecs, p, i, j, &px, &py);
     bits = seg_bits(mx - px) + seg_bits(my - py);
-    bits += ((bits * ((q * q) >> 10)) >> 8);
+    b2sr = (256 * (q * q >> DSV_MAX_QP_BITS) * p->blk_w * p->blk_h) / (p->vidmeta->width * p->vidmeta->height);
+    bits += bits * b2sr >> 7;
     if (sqr) {
-        return bits * bits;
+        bits *= bits;
     }
     return bits;
 }

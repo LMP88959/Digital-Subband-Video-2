@@ -39,6 +39,7 @@ extern "C" {
 
 typedef struct {
     DSV_PARAMS *params;
+    DSV_MV *mvs;
     uint8_t *blockdata; /* block bitmasks for adaptive things */
     uint8_t cur_plane;
     uint8_t isP; /* is P frame */

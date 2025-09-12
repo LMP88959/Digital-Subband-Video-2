@@ -336,6 +336,7 @@ degrad4x4(uint8_t *a, int as)
     }
 }
 
+
 extern void
 dsv_post_process(DSV_PLANE *dp)
 {
@@ -593,7 +594,6 @@ luma_filter(DSV_MV *vecs, int q, DSV_PARAMS *p, DSV_PLANE *dp, int do_filter)
                     ivfilter4x4(dp, x, y, tedgev, tt + addy, tt);
                 }
             }
-
             if (sharpen && DSV_IS_DIAG(mv) && DSV_IS_QPEL(mv) && amx < 8 && amy < 8) {
                 degrad4x4(dxy, dp->stride);
             }
@@ -835,15 +835,12 @@ predict(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_FRAME *ref, DSV_PLANE *dp)
     for (j = 0; j < p->nblocks_v; j++) {
         y = j * bh;
         for (i = 0; i < p->nblocks_h; i++) {
-            int dx, dy, px, py;
+            int px, py;
             x = i * bw;
             mv = &vecs[i + j * p->nblocks_h];
 
-            dx = DSV_SAR(mv->u.mv.x, sh);
-            dy = DSV_SAR(mv->u.mv.y, sv);
-
-            px = x + DSV_SAR(dx, 2);
-            py = y + DSV_SAR(dy, 2);
+            px = x + DSV_SAR(mv->u.mv.x, 2 + sh);
+            py = y + DSV_SAR(mv->u.mv.y, 2 + sv);
 
             if (DSV_MV_IS_INTRA(mv)) {
                 /* D.2 Compensating Intra Blocks */
@@ -876,8 +873,8 @@ predict(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_FRAME *ref, DSV_PLANE *dp)
                     sbh = bh / 2;
                     mask_index = 0;
 
-                    for (g = 0; g <= sbh; g += sbh) {
-                        for (f = 0; f <= sbw; f += sbw) {
+                    for (g = 0; g <= sbh; g += (sbh + !sbh)) {
+                        for (f = 0; f <= sbw; f += (sbw + !sbw)) {
                             sbx = x + f;
                             sby = y + g;
                             if (mv->submask & masks[mask_index]) {

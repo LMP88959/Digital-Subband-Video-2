@@ -18,6 +18,8 @@
 
 #define RC_QUAL_PCT(pct) ((pct) * DSV_RC_QUAL_SCALE)
 
+#define SQR(x) ((x) * (x))
+
 static void
 encdat_ref(DSV_ENCDATA *d)
 {
@@ -125,33 +127,57 @@ frame_luma_avg(DSV_FRAME *dst)
 }
 
 static int
-avg_motion(DSV_MV *vecs, DSV_PARAMS *p)
+avg_motion(DSV_ENCODER *enc, DSV_MV *vecs, DSV_PARAMS *p)
 {
     int i, j;
     int avgx = 0, avgy = 0;
+    int chaos = 0;
+    int stat = 0;
+    int nblk;
     DSV_MV *mv;
+#define MV_LT(v, t) (abs((v)->u.mv.x) < (t) && abs((v)->u.mv.y) < (t)) /* less than */
 
     for (j = 0; j < p->nblocks_v; j++) {
         for (i = 0; i < p->nblocks_h; i++) {
             mv = &vecs[i + j * p->nblocks_h];
 
             if (!DSV_MV_IS_SKIP(mv)) {
-                if (DSV_MV_IS_INTRA(mv)) {
-                    avgx += (mv->u.mv.x) * 4;
-                    avgy += (mv->u.mv.y) * 4;
+                avgx += mv->u.mv.x;
+                avgy += mv->u.mv.y;
+            }
+
+            if (DSV_MV_IS_SKIP(mv)) {
+                stat++;
+            } else {
+                int ndx, ndy;
+                dsv_neighbordif2(vecs, p, i, j, &ndx, &ndy);
+                if ((ndx > 4) || (ndy > 4)) {
+                    chaos++;
                 } else {
-                    avgx += (mv->u.mv.x);
-                    avgy += (mv->u.mv.y);
+                    stat++;
                 }
             }
         }
     }
-    return (abs(avgx) + abs(avgy)) / (p->nblocks_h * p->nblocks_v * 2);
+    nblk = p->nblocks_h * p->nblocks_v;
+    avgx = (abs(avgx) + abs(avgy)) / (nblk * 2);
+    avgx = MAX(avgx, 1);
+    enc->curr_avgmot = avgx;
+    enc->motion_static = stat * 100 / nblk;
+    chaos = chaos * 100 / nblk;
+    if (enc->prev_chaos < 0) {
+        enc->motion_chaos = chaos;
+        enc->prev_chaos = enc->motion_chaos;
+    } else {
+        enc->prev_chaos = (enc->prev_chaos + enc->motion_chaos) / 2;
+        enc->motion_chaos = chaos;
+    }
+    return avgx;
 }
 
 /* all of this rate control stuff is highly experimental */
 static int
-scene_complexity(DSV_ENCODER *enc, DSV_MV *vecs, DSV_PARAMS *p, DSV_ENCDATA *d)
+scene_complexity(DSV_ENCODER *enc, DSV_MV *vecs, DSV_PARAMS *p)
 {
     int i, j;
     int complexity = 0;
@@ -179,7 +205,7 @@ scene_complexity(DSV_ENCODER *enc, DSV_MV *vecs, DSV_PARAMS *p, DSV_ENCDATA *d)
                     complexity += abs(DSV_SAR(mv->u.mv.x, 2));
                     complexity += abs(DSV_SAR(mv->u.mv.y, 2));
 #endif
-                    complexity += (int) mv->err - (int) d->avg_err;
+                    complexity += (int) mv->err - (int) enc->avg_err;
                 }
 
                 if (DSV_MV_IS_INTRA(mv)) {
@@ -224,7 +250,7 @@ scene_complexity(DSV_ENCODER *enc, DSV_MV *vecs, DSV_PARAMS *p, DSV_ENCDATA *d)
 }
 
 static void
-quality2quant(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_FNUM prev_I)
+quality2quant(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_FNUM prev_I, int forced_intra)
 {
     int q;
     /* please note that this entire function is a mess */
@@ -239,59 +265,57 @@ quality2quant(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_FNUM prev_I)
 
     if (enc->rc_mode == DSV_RATE_CONTROL_CRF) {
         int minq, maxq;
-        int plex, plexsq, dir, moving_targ, clamped_avg;
+        int plex, moving_targ, clamped_avg;
         int anchor;
+        int fps, gop, sqst;
+        DSV_META *vfmt = d->params.vidmeta;
+        int bound = RC_QUAL_PCT(25);
 
         minq = d->params.has_ref ? enc->min_quality : enc->min_I_frame_quality;
         maxq = enc->max_quality;
-        plex = CLAMP(enc->curr_complexity, 0, 100);
-        plex -= 50;
-        if (plex <= 0) {
-            dir = 1; /* increase quality for a low complexity scene */
-        } else {
-            dir = -1; /* decrease quality for a high complexity scene */
-        }
-        plex = abs(plex);
-        if (plex > 4) {
-            plexsq = (plex * plex + 32) >> 6;
-        } else {
-            plexsq = plex;
-        }
         anchor = CLAMP(enc->quality, minq, maxq);
-        if (d->fnum > 0 && d->params.has_ref) {
-            DSV_META *vfmt = d->params.vidmeta;
-            int dist, gop, closeness, qa, step, erradd, errsq;
-            dist = abs((int) d->fnum - (int) prev_I);
-            /* see how close we are to the previous I frame relative to the gop length */
-            gop = CLAMP(enc->gop, 1, 600);
-            errsq = (d->avg_err * d->avg_err) >> 1;
-            /* scale by gop to fps ratio */
-            plexsq = (plexsq * gop * vfmt->fps_den) / (vfmt->fps_num << 4);
-            erradd = CLAMP(errsq, RC_QUAL_PCT(0), RC_QUAL_PCT(16));
-            if (dist >= enc->gop / 2) {
-                step = erradd;
-                dist = abs((int) d->fnum - ((int) prev_I + (int) gop / 2));
-                closeness = (step * dist / MAX(gop / 2, 1));
-                closeness = step - closeness;
-            } else {
-                step = erradd;
-                dist = abs((int) d->fnum - (int) prev_I);
-                closeness = (step * dist / MAX(gop / 2, 1));
-            }
-            qa = CLAMP(closeness, RC_QUAL_PCT(0), step);
-            anchor += qa;
-
-            anchor = CLAMP(anchor, minq, maxq);
+        fps = (vfmt->fps_num << 5) / vfmt->fps_den;
+        /* see how close we are to the previous I frame relative to the gop length */
+        gop = CLAMP(enc->gop, 1, (10 * fps >> 5));
+        sqst = SQR(enc->motion_static) / 75;
+        if (sqst < enc->motion_static) {
+            sqst = enc->motion_static;
         }
-        /* NOTE: I am aware dark_intra_boost is currently not taken into account in CRF mode... */
+        if (!d->params.has_ref) {
+            plex = (forced_intra ? 2 : 1) * sqst - enc->motion_chaos;
+        } else {
+            plex = (SQR(MIN(enc->avg_err, enc->motion_chaos / 3)) / 2) + sqst - (3 * enc->motion_chaos);
+        }
+        /* scale by gop to fps ratio */
+        plex = (plex * gop * vfmt->fps_den) / (vfmt->fps_num << 4);
+        plex = CLAMP(plex, -bound/4, bound/4);
         clamped_avg = MAX(enc->rf_avg, enc->quality);
-        moving_targ = (3 * anchor + 1 * clamped_avg + 2) >> 2;
-        q = moving_targ + dir * plexsq / 4;
-        DSV_INFO(("    COMPLEXITY: %d%%", enc->curr_complexity));
-        DSV_INFO(("    ANCHOR: %d    RF_AVG: %d", anchor, enc->rf_avg));
-        DSV_INFO(("      TARGET: %d", moving_targ));
-        DSV_INFO(("    DIR: %d   PLEXSQ: %d", dir, plexsq));
-        DSV_INFO(("    PRE-CLAMP Q: %d", q));
+        moving_targ = (1 * anchor + 3 * clamped_avg + 2) >> 2;
+        moving_targ = CLAMP(moving_targ, enc->quality - bound, enc->quality + bound);
+        if (enc->do_dark_intra_boost) {
+            unsigned la = frame_luma_avg(d->pyramid[enc->pyramid_levels - 1]);
+            DSV_DEBUG(("FRAME AVG %d",la));
+            if (la < 80) {
+                int step = (80 - la) / 5;
+                step = CLAMP(step, 5, 16) - 5;
+                plex += SQR(step) / 4;
+            }
+        }
+
+        q = moving_targ + plex;
+
+        if (!d->params.has_ref) {
+            int backpressure;
+            backpressure = (DSV_RC_QUAL_MAX - q) / (1 + (enc->motion_chaos / 4));
+            q += (backpressure * gop * vfmt->fps_den) / (vfmt->fps_num << 4);
+        }
+
+        q = CLAMP(q, enc->quality - bound, enc->quality + bound);
+        DSV_INFO(("   STATIC: %d", sqst));
+        DSV_INFO(("   ANCHOR: %d    RF_AVG: %d", anchor, enc->rf_avg));
+        DSV_INFO(("   TARGET: %d    PLEX: %d", moving_targ, plex));
+        DSV_INFO(("   FRAME_INTRA: %d", !d->params.has_ref));
+        DSV_INFO(("   PRE-CLAMP Q: %d", q));
         q = CLAMP(q, minq, maxq);
         enc->rc_qual = MAX(q, 0);
     } else if (enc->rc_mode == DSV_RATE_CONTROL_ABR) {
@@ -412,7 +436,7 @@ quality2quant(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_FNUM prev_I)
             }
             qa = CLAMP(closeness, RC_QUAL_PCT(0), step);
             q += qa / 2;
-            erradd = CLAMP((d->avg_err * d->avg_err) >> 1, RC_QUAL_PCT(0), RC_QUAL_PCT(16));
+            erradd = CLAMP((enc->avg_err * enc->avg_err) >> 1, RC_QUAL_PCT(0), RC_QUAL_PCT(16));
             q -= erradd;
 
             q = CLAMP(q, low_p, enc->max_quality);
@@ -491,17 +515,147 @@ mk_pyramid(DSV_ENCODER *enc, DSV_FRAME *frame, DSV_FRAME **pyramid)
     }
 }
 
+static void
+compute_auto_filter(DSV_ENCODER *enc, DSV_ENCDATA *d)
+{
+    int intra_pct, scblocks, chaos, psy;
+    int norm, relerr;
+    int avg_chaos, thresh = 8;
+    DSV_PARAMS *p = &d->params;
+
+    intra_pct = enc->curr_intra_pct;
+    scblocks = enc->curr_scblocks;
+    chaos = enc->motion_chaos;
+    psy = dsv_spatial_psy_factor(p, -1);
+
+    norm = SQR(d->quant) >> 15;
+
+    relerr = ((SQR(intra_pct) + scblocks + enc->avg_err * chaos) / MAX(norm, 1));
+    relerr = (relerr + (relerr * psy >> 7));
+    avg_chaos = (enc->prev_chaos + chaos + 1) >> 1;
+    thresh += thresh * psy >> 5;
+    thresh -= (MIN(avg_chaos, 48) * psy / (128 * (thresh - 2)));
+    enc->auto_filter = chaos <= 1 || relerr > thresh;
+
+    DSV_DEBUG(("autofilter = %d (relerr: %d), (thresh: %d)",
+            enc->auto_filter, relerr, thresh));
+}
+
 static int
+scene_change_detection(DSV_ENCODER *enc, DSV_ENCDATA *d)
+{
+    DSV_MV *mv;
+    int nintra = -1;
+    DSV_PARAMS *p = &d->params;
+    int detected = 0;
+    int blks, closeness, scblocks;
+    int i, j, sc, intra_pct, high_intra;
+    int gopdiv, complexity;
+    int tipct, closefac, shift, raw_scb, likely_sc;
+    int chaos, dchaos, avgmot;
+    int skipn = 0;
+
+    intra_pct = enc->curr_intra_pct;
+    scblocks = enc->curr_scblocks;
+    avgmot = avg_motion(enc, d->final_mvs, p);
+    chaos = enc->motion_chaos;
+    dchaos = abs(chaos - enc->prev_chaos);
+    gopdiv = abs(enc->gop) * 3 / 4;
+    closeness = (int) d->fnum - (int) enc->prev_gop;
+    complexity = scene_complexity(enc, d->final_mvs, p);
+    raw_scb = scblocks;
+    closefac = closeness / MAX(gopdiv, 1);
+    if (complexity > 256 && chaos < 5) {
+        shift = 9;
+    } else if (complexity > chaos * 2) {
+        shift = 8;
+    } else if (complexity > chaos) {
+        shift = 7;
+    } else {
+        shift = 6;
+    }
+    tipct = SQR(intra_pct) >> 5;
+    likely_sc = (intra_pct * 3 / 2 > scblocks);
+    likely_sc += (tipct > scblocks);
+    if (scblocks > enc->scene_change_pct && chaos < 34) {
+        scblocks = SQR(scblocks * 2) / MAX(enc->scene_change_pct, 1);
+        likely_sc++;
+    } else {
+        scblocks = SQR(scblocks) / MAX(enc->scene_change_pct, 1);
+    }
+    shift = MAX(shift - likely_sc, 5);
+
+    blks = MAX((dchaos / 16) + (enc->avg_err / 8), 1) * scblocks * MAX(complexity, 1) * MAX(closefac, 1) >> (shift + 1);
+    DSV_DEBUG(("frame %d --- avg_err=%d, avg_mot=%d, pchaos=%d%%, chaos=%d%%, complexity=%d, intra_pct=%d%%, raw_scb=%d%%, adj_scb=%d%%", d->fnum, enc->avg_err, avgmot, enc->prev_chaos, chaos, complexity, intra_pct, raw_scb, blks));
+
+    sc = (enc->do_scd && ((blks > 120) ||
+            (blks > enc->scene_change_pct
+            && avgmot < 20
+            && enc->motion_chaos <= MAX(enc->prev_chaos - 10, 30)))
+           );
+    high_intra = intra_pct > enc->intra_pct_thresh;
+    if (sc || high_intra) {
+        if (sc) {
+            DSV_INFO(("scene change %d [%d > %d]", closeness, blks, enc->scene_change_pct));
+        }
+        if (high_intra) {
+            DSV_INFO(("too much intra, inserting I frame %d%%", intra_pct));
+        }
+        goto scene_change_detected;
+    }
+    /* only update complexity if intra frame was not inserted */
+    enc->curr_complexity = complexity;
+
+    DSV_ASSERT(enc->intra_map);
+    nintra = 0;
+    for (j = 0; j < p->nblocks_v; j++) {
+        for (i = 0; i < p->nblocks_h; i++) {
+            int idx = i + j * p->nblocks_h;
+            mv = &d->final_mvs[idx];
+            enc->intra_map[idx] |= (!!DSV_MV_IS_INTRA(mv));
+            if (enc->intra_map[idx]) {
+                if (DSV_MV_IS_SKIP(mv) || mv->u.all == 0) {
+                    if (DSV_MV_IS_MAINTAIN(mv)) {
+                        nintra += 3;
+                        skipn += 2;
+                    } else {
+                        nintra += 1;
+                        skipn++;
+                    }
+                } else if (DSV_MV_IS_NOXMITY(mv) && DSV_MV_IS_MAINTAIN(mv)) {
+                    nintra++;
+                }
+            }
+            nintra += enc->intra_map[idx];
+        }
+    }
+    nintra = (nintra * 100) / (p->nblocks_h * p->nblocks_v);
+    skipn = (skipn * 100) / (p->nblocks_h * p->nblocks_v);
+    if (nintra > enc->intra_pct_thresh &&
+        enc->curr_avgmot < 10 &&
+        enc->motion_chaos <= CLAMP((enc->prev_chaos / 2) + skipn, 20, 40)) {
+        DSV_INFO(("too much cumulative intra, inserting I frame %d%%", nintra));
+        p->has_ref = 0;
+        nintra = -1;
+        goto scene_change_detected;
+    }
+    goto no_change_detected;
+
+scene_change_detected:
+    detected = 1; /* say that we detected a scene change */
+    p->has_ref = 0; /* set to intra (no reference) */
+
+no_change_detected:
+    return detected;
+}
+
+static void
 motion_est(DSV_ENCODER *enc, DSV_ENCDATA *d)
 {
-    DSV_PARAMS *p = &d->params;
     DSV_HME hme;
     DSV_ENCDATA *ref = d->refdata;
-    int blks, closeness, scene_change_blocks = 0;
-    int i, sc, intra_pct, high_intra;
-    int gopdiv, complexity;
+    int i;
     DSV_FRAME *pyramid[DSV_MAX_PYRAMID_LEVELS];
-    int closefac, shift, avgmot;
 
     memset(&pyramid, 0, sizeof(pyramid));
     memset(&hme, 0, sizeof(hme));
@@ -513,65 +667,24 @@ motion_est(DSV_ENCODER *enc, DSV_ENCDATA *d)
     hme.ref_mvf = ref->final_mvs;
     hme.ref[0] = ref->recon_frame;
     hme.ogr[0] = ref->padded_frame;
+    /* set up image pyramids for hierarchical motion estimation */
     mk_pyramid(enc, ref->recon_frame, pyramid);
     for (i = 0; i < enc->pyramid_levels; i++) {
-        hme.src[i + 1] = d->pyramid[i];
-        hme.ref[i + 1] = pyramid[i];
-        hme.ogr[i + 1] = ref->pyramid[i];
+        hme.src[i + 1] = d->pyramid[i]; /* source frame */
+        hme.ref[i + 1] = pyramid[i]; /* reconstructed reference frame (what the decoder sees) */
+        hme.ogr[i + 1] = ref->pyramid[i]; /* source reference frame */
     }
 
-    intra_pct = dsv_hme(&hme, &scene_change_blocks, &d->avg_err);
+    enc->curr_intra_pct = dsv_hme(&hme, &enc->curr_scblocks, &enc->avg_err);
     d->final_mvs = hme.mvf[0]; /* save result of HME */
     for (i = 1; i < enc->pyramid_levels + 1; i++) {
         if (hme.mvf[i]) {
             dsv_free(hme.mvf[i]);
         }
-    }
-    for (i = 0; i < enc->pyramid_levels; i++) {
-        if (pyramid[i]) {
-            dsv_frame_ref_dec(pyramid[i]);
+        if (pyramid[i - 1]) {
+            dsv_frame_ref_dec(pyramid[i - 1]);
         }
     }
-
-    avgmot = avg_motion(d->final_mvs, p);
-    avgmot = MAX(avgmot, 1);
-    enc->auto_filter = (avgmot <= 1) || (avgmot >= 9);
-    /* scale based on distance to last I frame */
-    gopdiv = abs(enc->gop) * 3 / 4;
-    closeness = (int) d->fnum - (int) enc->prev_gop;
-    complexity = scene_complexity(enc, d->final_mvs, p, d);
-    DSV_INFO(("frame %d --- avg_err=%d, avg_mot=%d, complexity=%d, intra_pct=%d%%, raw_scb=%d%%", d->fnum, d->avg_err, avgmot, complexity, intra_pct, scene_change_blocks));
-    closefac = closeness / MAX(gopdiv, 1);
-    if (complexity > avgmot * 2) {
-        shift = 8;
-    } else if (complexity > avgmot) {
-        shift = 7;
-    } else {
-        shift = 6;
-    }
-    if (scene_change_blocks > enc->scene_change_pct && avgmot < 10) {
-        scene_change_blocks = scene_change_blocks * 2 / avgmot;
-        shift = MAX(shift - 2, 5);
-    }
-    blks = scene_change_blocks * MAX(complexity, 1) * MAX(closefac, 1) >> shift;
-    DSV_INFO(("adj scene change blocks for frame %d = %d%%", d->fnum, blks));
-    enc->curr_intra_pct = intra_pct;
-
-    sc = (enc->do_scd && (blks > enc->scene_change_pct));
-    high_intra = intra_pct > enc->intra_pct_thresh;
-    if (sc || high_intra) {
-        p->has_ref = 0;
-        if (sc) {
-            DSV_INFO(("scene change %d [%d > %d]", closeness, blks, enc->scene_change_pct));
-        }
-        if (high_intra) {
-            DSV_INFO(("too much intra, inserting I frame %d%%", intra_pct));
-        }
-        return 1;
-    }
-    /* only update complexity if intra frame was not inserted */
-    enc->curr_complexity = complexity;
-    return 0;
 }
 
 /* B.2.3.4 Motion Data */
@@ -604,25 +717,38 @@ encode_motion(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_BS *bs, int *stats)
         for (i = 0; i < params->nblocks_h; i++) {
             int idx = i + j * params->nblocks_h;
             DSV_MV *mv = &d->final_mvs[idx];
-            int intra = DSV_MV_IS_INTRA(mv);
 
-            dsv_bs_put_rle(&rle, (stats[DSV_MODE_STAT] == DSV_ONE_MARKER) ? intra : !intra);
-            dsv_bs_put_rle(&prrle, (stats[DSV_EPRM_STAT] == DSV_ONE_MARKER) ? DSV_MV_IS_EPRM(mv) : !DSV_MV_IS_EPRM(mv));
             enc->blockdata[idx] |= (!!DSV_MV_IS_EPRM(mv)) << DSV_EPRM_BIT;
 
             /* B.2.3.4 Motion Data - Motion Vector Prediction */
             if (!DSV_MV_IS_SKIP(mv)) {
                 int cvx, cvy;
                 int x, y;
+                int intra = DSV_MV_IS_INTRA(mv);
+
                 dsv_movec_pred(d->final_mvs, params, i, j, &x, &y);
                 if (intra) {
                     /* remove sub-pel precision for intra blocks */
-                    x = DSV_SAR(x, 2);
-                    y = DSV_SAR(y, 2);
+                    x = DSV_SAR_R(x, 2); /* intra vector pred uses rounding */
+                    y = DSV_SAR_R(y, 2);
                     cvx = DSV_SAR(mv->u.mv.x, 2);
                     cvy = DSV_SAR(mv->u.mv.y, 2);
-                    mv->u.mv.x = cvx * 4; /* necessary to make prediction possible */
+                    mv->u.mv.x = cvx * 4; /* rescale to make prediction possible */
                     mv->u.mv.y = cvy * 4;
+
+                    /* B.2.3.4 Motion Data - Intra Sub-Block Mask */
+                    if (mv->submask == DSV_MASK_ALL_INTRA) {
+                        dsv_bs_put_bit(mbs + DSV_SUB_SBIM, 1);
+                    } else {
+                        dsv_bs_put_bit(mbs + DSV_SUB_SBIM, 0);
+                        dsv_bs_put_bits(mbs + DSV_SUB_SBIM, 4, mv->submask);
+                    }
+                    if (mv->dc & DSV_SRC_DC_PRED) { /* use source DC prediction */
+                        dsv_bs_put_bit(mbs + DSV_SUB_SBIM, 1);
+                        dsv_bs_put_bits(mbs + DSV_SUB_SBIM, 8, mv->dc & 0xff);
+                    } else {
+                        dsv_bs_put_bit(mbs + DSV_SUB_SBIM, 0);
+                    }
                 } else {
                     cvx = mv->u.mv.x;
                     cvy = mv->u.mv.y;
@@ -632,24 +758,10 @@ encode_motion(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_BS *bs, int *stats)
                 if (dsv_neighbordif(d->final_mvs, params, i, j) > DSV_NDIF_THRESH) {
                     enc->blockdata[idx] |= (1 << DSV_STABLE_BIT);
                 }
+                dsv_bs_put_rle(&rle, (stats[DSV_MODE_STAT] == DSV_ONE_MARKER) ? intra : !intra);
+                dsv_bs_put_rle(&prrle, (stats[DSV_EPRM_STAT] == DSV_ONE_MARKER) ? DSV_MV_IS_EPRM(mv) : !DSV_MV_IS_EPRM(mv));
             } else {
                 enc->blockdata[idx] |= (1 << DSV_STABLE_BIT);
-            }
-
-            if (intra) {
-                /* B.2.3.4 Motion Data - Intra Sub-Block Mask */
-                if (mv->submask == DSV_MASK_ALL_INTRA) {
-                    dsv_bs_put_bit(mbs + DSV_SUB_SBIM, 1);
-                } else {
-                    dsv_bs_put_bit(mbs + DSV_SUB_SBIM, 0);
-                    dsv_bs_put_bits(mbs + DSV_SUB_SBIM, 4, mv->submask);
-                }
-                if (mv->dc & DSV_SRC_DC_PRED) { /* use source DC prediction */
-                    dsv_bs_put_bit(mbs + DSV_SUB_SBIM, 1);
-                    dsv_bs_put_bits(mbs + DSV_SUB_SBIM, 8, mv->dc & 0xff);
-                } else {
-                    dsv_bs_put_bit(mbs + DSV_SUB_SBIM, 0);
-                }
             }
         }
     }
@@ -902,10 +1014,11 @@ gather_stats(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_MV *intramv, int *stats)
             } else {
                 stable = !!DSV_MV_IS_SKIP(mv);
             }
-
-            /* get stats on mode and EPRM bits */
-            stats[DSV_MODE_STAT] += (!!DSV_MV_IS_INTRA(mv)) ? 1 : -1;
-            stats[DSV_EPRM_STAT] += (!!DSV_MV_IS_EPRM(mv)) ? 1 : -1;
+            if (!DSV_MV_IS_SKIP(mv)) {
+                /* get stats on mode and EPRM bits */
+                stats[DSV_MODE_STAT] += (!!DSV_MV_IS_INTRA(mv)) ? 1 : -1;
+                stats[DSV_EPRM_STAT] += (!!DSV_MV_IS_EPRM(mv)) ? 1 : -1;
+            }
         } else {
             DSV_MV *mv = &intramv[i];
             if (d->fnum > 0 && enc->do_temporal_aq) {
@@ -915,7 +1028,6 @@ gather_stats(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_MV *intramv, int *stats)
             } else {
                 stable = !!DSV_MV_IS_SKIP(mv);
             }
-
             stats[DSV_MAINTAIN_STAT] += (!!DSV_MV_IS_MAINTAIN(mv)) ? 1 : -1;
             stats[DSV_RINGING_STAT] += (!!DSV_MV_IS_RINGING(mv)) ? 1 : -1;
         }
@@ -1024,7 +1136,11 @@ encode_picture(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_BUF *output_buf)
     fm.blockdata = enc->blockdata;
     fm.isP = d->params.has_ref;
     fm.fnum = d->fnum;
-
+    if (fm.isP) {
+        fm.mvs = d->final_mvs;
+    } else {
+        fm.mvs = intramv;
+    }
     dsv_mk_coefs(coefs, enc->vidmeta.subsamp, width, height);
 
     /* encode the residual image */
@@ -1126,6 +1242,7 @@ encode_one_frame(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_BUF *output_buf)
     DSV_DEBUG(("gop length %d", enc->gop));
 
     mk_pyramid(enc, d->padded_frame, d->pyramid);
+
     if (enc->force_metadata || ((enc->prev_gop + enc->gop) <= d->fnum)) {
         gop_start = 1;
         enc->prev_gop = d->fnum;
@@ -1151,51 +1268,25 @@ encode_one_frame(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_BUF *output_buf)
         enc->ref = d;
         encdat_ref(d);
     }
-    d->avg_err = 0;
+    enc->avg_err = 0;
 
     if (!d->params.has_ref) {
         if (!enc->intra_map) {
             enc->intra_map = dsv_alloc(sizeof(*enc->intra_map) * p->nblocks_h * p->nblocks_v);
         }
-        memset(enc->intra_map, 0, sizeof(*enc->intra_map) * p->nblocks_h * p->nblocks_v);
     } else {
-        int j, dist;
-        int nintra = 0;
-        DSV_MV *mv;
-
-        forced_intra = motion_est(enc, d);
-        dist = abs((int) d->fnum - (int) prev_I);
-        if (!forced_intra) {
-            DSV_ASSERT(enc->intra_map);
-
-            for (j = 0; j < p->nblocks_v; j++) {
-                for (i = 0; i < p->nblocks_h; i++) {
-                    int idx = i + j * p->nblocks_h;
-                    mv = &d->final_mvs[idx];
-                    enc->intra_map[idx] |= (!!DSV_MV_IS_INTRA(mv));
-                    if (enc->intra_map[idx] && (DSV_MV_IS_SKIP(mv) || mv->u.all == 0)) {
-                        nintra++;
-                    }
-                    nintra += enc->intra_map[idx];
-                }
-            }
-            nintra = (nintra * 100) / (p->nblocks_h * p->nblocks_v);
-            if (nintra > enc->intra_pct_thresh && dist > (enc->gop / 4)) {
-                DSV_INFO(("too much cumulative intra, inserting I frame %d%%", nintra));
-                p->has_ref = 0;
-                forced_intra = 1;
-            }
-        }
-        /* reset intra map on new intra frame */
-        if (forced_intra) {
-            memset(enc->intra_map, 0, sizeof(*enc->intra_map) * p->nblocks_h * p->nblocks_v);
-        }
+        motion_est(enc, d);
+        forced_intra = scene_change_detection(enc, d);
     }
     if (enc->variable_i_interval && forced_intra) {
         enc->prev_gop = d->fnum;
     }
-
-    quality2quant(enc, d, prev_I);
+    if (!d->params.has_ref) {
+        /* reset intra map on new intra frame */
+        memset(enc->intra_map, 0, sizeof(*enc->intra_map) * p->nblocks_h * p->nblocks_v);
+    }
+    quality2quant(enc, d, prev_I, forced_intra);
+    compute_auto_filter(enc, d);
 
     dsv_frame_copy(d->residual, d->padded_frame);
 
@@ -1231,26 +1322,28 @@ dsv_enc_init(DSV_ENCODER *enc)
     enc->prev_gop = -1;
 
     /* default config */
-    enc->quality = DSV_QUALITY_PERCENT(85);
-    enc->gop = 12;
+    enc->quality = DSV_QUALITY_PERCENT(80);
+    enc->gop = 48;
+    enc->effort = DSV_MAX_EFFORT;
     enc->pyramid_levels = 0;
     enc->rc_mode = DSV_RATE_CONTROL_CRF;
     enc->bitrate = INT_MAX;
     enc->rc_pergop = 0;
     enc->min_q_step = 4;
     enc->max_q_step = 1;
-    enc->min_quality = DSV_QUALITY_PERCENT(1);
-    enc->max_quality = DSV_QUALITY_PERCENT(95);
-    enc->min_I_frame_quality = DSV_QUALITY_PERCENT(5);
+    enc->min_quality = enc->quality - DSV_USER_QUAL_TO_RC_QUAL(5);
+    enc->max_quality = DSV_RC_QUAL_MAX;
+    enc->min_I_frame_quality = enc->quality - DSV_USER_QUAL_TO_RC_QUAL(2);
     enc->rf_total = 0;
     enc->rf_avg = 0;
+    enc->prev_chaos = -1;
     enc->prev_complexity = -1;
     enc->curr_complexity = -1;
     enc->prev_quant = 0;
 
-    enc->intra_pct_thresh = 50;
-    enc->stable_refresh = 14;
-    enc->scene_change_pct = 55;
+    enc->intra_pct_thresh = 90;
+    enc->stable_refresh = 24;
+    enc->scene_change_pct = 85;
     enc->do_scd = 1;
     enc->variable_i_interval = 1;
     enc->skip_block_thresh = 0;
@@ -1260,7 +1353,7 @@ dsv_enc_init(DSV_ENCODER *enc)
     enc->do_psy = DSV_PSY_ALL;
     enc->do_dark_intra_boost = 1;
     enc->do_intra_filter = 1;
-    enc->do_inter_filter = 1;
+    enc->do_inter_filter = -1;
 }
 
 extern void
@@ -1269,7 +1362,7 @@ dsv_enc_start(DSV_ENCODER *enc)
     enc->quality = CLAMP(enc->quality, 0, DSV_RC_QUAL_MAX);
     switch (enc->rc_mode) {
         case DSV_RATE_CONTROL_CRF:
-            enc->rc_qual = CLAMP(enc->quality * 2, enc->min_I_frame_quality, enc->max_quality);
+            enc->rc_qual = CLAMP(enc->quality + RC_QUAL_PCT(5), enc->min_I_frame_quality, enc->max_quality);
             enc->rf_avg = enc->rc_qual;
             enc->avg_P_frame_q = enc->quality;
             break;
@@ -1280,6 +1373,10 @@ dsv_enc_start(DSV_ENCODER *enc)
         case DSV_RATE_CONTROL_CQP:
             break;
     }
+    enc->stats.iminq = INT_MAX;
+    enc->stats.pminq = INT_MAX;
+    enc->stats.imins = INT_MAX;
+    enc->stats.pmins = INT_MAX;
 
     enc->force_metadata = 1;
 }
@@ -1370,6 +1467,84 @@ dsv_enc(DSV_ENCODER *enc, DSV_FRAME *frame, DSV_BUF *bufs)
     bufs[nbuf++] = outbuf;
     set_link_offsets(enc, &bufs[nbuf - 1], 0);
 
+    if (d->params.has_ref) {
+        int i, j;
+        DSV_PARAMS *p = &d->params;
+        /* P frame */
+        enc->stats.pnum++;
+        enc->stats.pfnum += !!enc->auto_filter;
+        enc->stats.psize += outbuf.len;
+        enc->stats.pqual += enc->rc_qual;
+        enc->stats.pmaxq = MAX(enc->rc_qual, enc->stats.pmaxq);
+        enc->stats.pmaxs = MAX(outbuf.len, enc->stats.pmaxs);
+        enc->stats.pminq = MIN(enc->rc_qual, enc->stats.pminq);
+        enc->stats.pmins = MIN(outbuf.len, enc->stats.pmins);
+        for (j = 0; j < p->nblocks_v; j++) {
+            for (i = 0; i < p->nblocks_h; i++) {
+                DSV_MV *mv;
+                mv = &d->final_mvs[i + j * p->nblocks_h];
+                if (DSV_MV_IS_EPRM(mv)) {
+                    enc->stats.eprm++;
+                }
+                if (DSV_MV_IS_SKIP(mv)) {
+                    enc->stats.skip++;
+                } else {
+                    if (DSV_MV_IS_INTRA(mv)) {
+                        enc->stats.mbI++;
+                        if (mv->dc & DSV_SRC_DC_PRED) {
+                            enc->stats.mbdc++;
+                        }
+                        if (mv->submask != DSV_MASK_ALL_INTRA) {
+                            enc->stats.mbsub++;
+                            if (mv->submask & DSV_MASK_INTRA00) {
+                                enc->stats.mbsubs[0]++;
+                            }
+                            if (mv->submask & DSV_MASK_INTRA01) {
+                                enc->stats.mbsubs[1]++;
+                            }
+                            if (mv->submask & DSV_MASK_INTRA10) {
+                                enc->stats.mbsubs[2]++;
+                            }
+                            if (mv->submask & DSV_MASK_INTRA11) {
+                                enc->stats.mbsubs[3]++;
+                            }
+                        }
+                    } else {
+                        enc->stats.mbP++;
+                        if (mv->u.mv.x & 1) {
+                            enc->stats.qpx++;
+                        } else {
+                            if (mv->u.mv.x & 3) {
+                                enc->stats.hpx++;
+                            } else {
+                                enc->stats.fpx++;
+                            }
+                        }
+                        if (mv->u.mv.y & 1) {
+                            enc->stats.qpy++;
+                        } else {
+                            if (mv->u.mv.y & 3) {
+                                enc->stats.hpy++;
+                            } else {
+                                enc->stats.fpy++;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        enc->stats.mb += p->nblocks_h * p->nblocks_v;
+    } else {
+        /* I frame */
+        enc->stats.inum++;
+        enc->stats.ifnum += !!enc->do_intra_filter;
+        enc->stats.isize += outbuf.len;
+        enc->stats.iqual += enc->rc_qual;
+        enc->stats.imaxq = MAX(enc->rc_qual, enc->stats.imaxq);
+        enc->stats.imaxs = MAX(outbuf.len, enc->stats.imaxs);
+        enc->stats.iminq = MIN(enc->rc_qual, enc->stats.iminq);
+        enc->stats.imins = MIN(outbuf.len, enc->stats.imins);
+    }
     if (d->params.has_ref) {
         enc->refresh_ctr++; /* for averaging stable blocks */
     }

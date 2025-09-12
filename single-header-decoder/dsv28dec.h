@@ -376,6 +376,9 @@ extern int d28_get_log_level(void);
 #define DSV_SAR(v, s) ((v) >> (s))
 #endif
 
+/* rounding version */
+#define DSV_SAR_R(v, s) DSV_SAR((v) + (1 << ((s) - 1)), (s))
+
 #define DSV_FMT_FULL_V 0x0
 #define DSV_FMT_DIV2_V 0x1
 #define DSV_FMT_DIV4_V 0x2
@@ -2665,7 +2668,7 @@ reconstruct(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_PLANE *refp, DSV_PLANE *resp
         y = j * bh;
         for (i = 0; i < p->nblocks_h; i++) {
             int m, n;
-            int dx, dy, px, py;
+            int px, py;
             uint8_t *res, *out, *pred;
 
             x = i * bw;
@@ -2675,11 +2678,8 @@ reconstruct(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_PLANE *refp, DSV_PLANE *resp
             out = DSV_GET_XY(outp, x, y);
             pred = temp;
 
-            dx = DSV_SAR(mv->u.mv.x, sh);
-            dy = DSV_SAR(mv->u.mv.y, sv);
-
-            px = x + DSV_SAR(dx, 2);
-            py = y + DSV_SAR(dy, 2);
+            px = x + DSV_SAR(mv->u.mv.x, 2 + sh);
+            py = y + DSV_SAR(mv->u.mv.y, 2 + sv);
 
             if (DSV_MV_IS_INTRA(mv)) {
                 /* D.2 Compensating Intra Blocks */
@@ -2712,8 +2712,8 @@ reconstruct(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_PLANE *refp, DSV_PLANE *resp
                     sbh = bh / 2;
                     mask_index = 0;
 
-                    for (g = 0; g <= sbh; g += sbh) {
-                        for (f = 0; f <= sbw; f += sbw) {
+                    for (g = 0; g <= sbh; g += (sbh + !sbh)) {
+                        for (f = 0; f <= sbw; f += (sbw + !sbw)) {
                             dec = temp + f + g * DSV_MAX_BLOCK_SIZE;
                             if (mv->submask & masks[mask_index]) {
                                 if (c == 0 && mv->dc) { /* DC is only for luma */
@@ -3253,64 +3253,62 @@ decode_motion(DSV_IMAGE *img, DSV_MV *mvs, DSV_BS *inbs, DSV_BUF *buf, int *stat
     for (j = 0; j < params->nblocks_v; j++) {
         for (i = 0; i < params->nblocks_h; i++) {
             DSV_MV *mv;
-            int mode, eprm, idx;
+            int idx;
             idx = i + j * params->nblocks_h;
             mv = &mvs[idx];
-            mode = bs_get_rle(&rle);
-            eprm = bs_get_rle(&prrle);
-            if (stats[DSV_MODE_STAT] == DSV_ZERO_MARKER) {
-                mode = !mode;
-            }
-            if (stats[DSV_EPRM_STAT] == DSV_ZERO_MARKER) {
-                eprm = !eprm;
-            }
 
-            DSV_MV_SET_INTRA(mv, mode);
-            DSV_MV_SET_EPRM(mv, eprm);
-            img->blockdata[idx] &= ~(1 << DSV_STABLE_BIT);
-            img->blockdata[idx] |= eprm << DSV_EPRM_BIT;
             if (img->blockdata[idx] & DSV_IS_SKIP) {
                 DSV_MV_SET_SKIP(mv, 1);
+                mv->u.all = 0;
+                img->blockdata[idx] |= (1 << DSV_STABLE_BIT);
             } else {
+                /* B.2.3.4 Motion Data - Motion Vector Prediction */
+                int mode, eprm, px, py;
+
                 DSV_MV_SET_SKIP(mv, 0);
-            }
-            /* B.2.3.4 Motion Data - Motion Vector Prediction */
-            if (!DSV_MV_IS_SKIP(mv)) {
-                int px, py;
+
+                mode = bs_get_rle(&rle);
+                eprm = bs_get_rle(&prrle);
+                if (stats[DSV_MODE_STAT] == DSV_ZERO_MARKER) {
+                    mode = !mode;
+                }
+                if (stats[DSV_EPRM_STAT] == DSV_ZERO_MARKER) {
+                    eprm = !eprm;
+                }
+
+                DSV_MV_SET_INTRA(mv, mode);
+                DSV_MV_SET_EPRM(mv, eprm);
+                img->blockdata[idx] &= ~(1 << DSV_STABLE_BIT);
+                img->blockdata[idx] |= eprm << DSV_EPRM_BIT;
 
                 mv_pred(mvs, params, i, j, &px, &py);
                 if (DSV_MV_IS_INTRA(mv)) {
-                    px = DSV_SAR(px, 2);
-                    py = DSV_SAR(py, 2);
+                    px = DSV_SAR_R(px, 2);
+                    py = DSV_SAR_R(py, 2);
                 }
                 mv->u.mv.x = bs_get_seg(bs + DSV_SUB_MV_X) + px;
                 mv->u.mv.y = bs_get_seg(bs + DSV_SUB_MV_Y) + py;
                 if (DSV_MV_IS_INTRA(mv)) {
-                    mv->u.mv.x *= 4;
+                    mv->u.mv.x *= 4; /* rescale to qpel */
                     mv->u.mv.y *= 4;
+
+                    /* B.2.3.4 Motion Data - Intra Sub-Block Mask Decoding */
+                    if (bs_get_bit(bs + DSV_SUB_SBIM)) {
+                        mv->submask = DSV_MASK_ALL_INTRA;
+                    } else {
+                        mv->submask = bs_get_bits(bs + DSV_SUB_SBIM, 4);
+                    }
+                    if (bs_get_bit(bs + DSV_SUB_SBIM)) {
+                        mv->dc = bs_get_bits(bs + DSV_SUB_SBIM, 8) | DSV_SRC_DC_PRED;
+                    } else {
+                        mv->dc = 0;
+                    }
+                    img->blockdata[idx] |= DSV_IS_INTRA;
                 }
                 if (neighdif(mvs, params, i, j) > DSV_NDIF_THRESH) {
                     img->blockdata[idx] |= (1 << DSV_STABLE_BIT);
                 }
-            } else {
-                mv->u.mv.x = 0;
-                mv->u.mv.y = 0;
-                img->blockdata[idx] |= (1 << DSV_STABLE_BIT);
-            }
 
-            if (DSV_MV_IS_INTRA(mv)) {
-                /* B.2.3.4 Motion Data - Intra Sub-Block Mask Decoding */
-                if (bs_get_bit(bs + DSV_SUB_SBIM)) {
-                    mv->submask = DSV_MASK_ALL_INTRA;
-                } else {
-                    mv->submask = bs_get_bits(bs + DSV_SUB_SBIM, 4);
-                }
-                if (bs_get_bit(bs + DSV_SUB_SBIM)) {
-                    mv->dc = bs_get_bits(bs + DSV_SUB_SBIM, 8) | DSV_SRC_DC_PRED;
-                } else {
-                    mv->dc = 0;
-                }
-                img->blockdata[idx] |= DSV_IS_INTRA;
             }
         }
     }
