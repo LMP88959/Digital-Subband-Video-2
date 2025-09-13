@@ -182,11 +182,11 @@ dsv_yuv_read(FILE *in, int fno, uint8_t *o, int width, int height, int subsamp)
         int i, j;
         unsigned linebytes = width * 2;
 
-        tline = dsv_alloc(linebytes);
         offset = fno * npix * 2;
         if (fseek(in, offset, SEEK_SET)) {
             return -1;
         }
+        tline = dsv_alloc(linebytes);
         for (j = 0; j < height; j++) {
             uint8_t *tlp = tline;
             if (fread(tline, 1, linebytes, in) != linebytes) {
