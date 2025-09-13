@@ -810,7 +810,7 @@ end_of_stream:
                     enc.bitrate, enc.bitrate / (8 * 1024), enc.bitrate / 1024);
         }
 
-        if (enc.stats.inum) { // stats
+        if (enc.stats.inum) {
             printf("num I (filt/total): %u/%u, total bytes: %u, [min,avg,max] -> qual: [%u, %u, %u], bytes: [%u, %u, %u]\n",
                     enc.stats.ifnum,
                     enc.stats.inum,
