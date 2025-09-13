@@ -1352,6 +1352,10 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
             int lax = 0, lay = 0;
             unsigned var_src, avg_src;
             PSY_COEFS psy;
+            /* defaults */
+            psy.err_weight = 2;
+            psy.tex_weight = 1;
+            psy.avg_weight = 0;
 
             bx = (i * y_w) >> level;
             by = (j * y_h) >> level;
