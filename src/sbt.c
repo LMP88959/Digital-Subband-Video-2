@@ -648,7 +648,7 @@ inv_simple(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int ovf_s
         dpA = dst + (y + 0) * width;
         dpB = dst + (y + 1) * width;
         for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
-            LL = spLL[idx] << ovf_safety;
+	    LL = ((uint32_t)spLL[idx]) << ovf_safety;
             LH = spLH[idx];
             HL = spHL[idx];
             HH = spHH[idx];
@@ -659,7 +659,7 @@ inv_simple(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int ovf_s
             dpB[x + 1] = (LL - LH - HL + HH) / 4; /* HH */
         }
         if (oddw) {
-            LL = spLL[idx] << ovf_safety;
+            LL = ((uint32_t)spLL[idx]) << ovf_safety;
             HL = spHL[idx];
 
             dpA[x + 0] = (LL + HL) / 4; /* LL */
@@ -673,14 +673,14 @@ inv_simple(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int ovf_s
     if (oddh) {
         DSV_SBC *dpA = dst + (y + 0) * width;
         for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
-            LL = spLL[idx] << ovf_safety;
+            LL = ((uint32_t)spLL[idx]) << ovf_safety;
             LH = spLH[idx];
 
             dpA[x + 0] = (LL + LH) / 4; /* LL */
             dpA[x + 1] = (LL - LH) / 4; /* LH */
         }
         if (oddw) {
-            LL = spLL[idx] << ovf_safety;
+            LL = ((uint32_t)spLL[idx]) << ovf_safety;
 
             dpA[x + 0] = (LL / 4); /* LL */
         }
@@ -722,14 +722,14 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqp, int ovf
             int inX = x > 0 && x < (ws - oddw - 1);
             int nudge, t, lp, ln, mn, mx;
 
-            LL = spLL[idx] << ovf_safety;
+            LL = ((uint32_t)spLL[idx]) << ovf_safety;
             LH = spLH[idx];
             HL = spHL[idx];
             HH = spHH[idx];
 
             if (inX) {
-                lp = spLL[idx - 1] << ovf_safety; /* prev */
-                ln = spLL[idx + 1] << ovf_safety; /* next */
+	      lp = ((uint32_t)spLL[idx - 1]) << ovf_safety; /* prev */
+	      ln = ((uint32_t)spLL[idx + 1]) << ovf_safety; /* next */
                 mx = LL - ln; /* find difference between LL values */
                 mn = lp - LL;
                 if (mn > mx) {
@@ -748,8 +748,8 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqp, int ovf
                 }
             }
             if (inY) { /* do the same as above but in the Y direction */
-                lp = spLL[idx - width] << ovf_safety;
-                ln = spLL[idx + width] << ovf_safety;
+	      lp = ((uint32_t)spLL[idx - width]) << ovf_safety;
+	      ln = ((uint32_t)spLL[idx + width]) << ovf_safety;
                 mx = LL - ln;
                 mn = lp - LL;
                 if (mn > mx) {
@@ -772,7 +772,7 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqp, int ovf
             dpB[x + 1] = (LL - LH - HL + HH) / 4; /* HH */
         }
         if (oddw) {
-            LL = spLL[idx] << ovf_safety;
+	    LL = ((uint32_t)spLL[idx]) << ovf_safety;
             HL = spHL[idx];
 
             dpA[x + 0] = (LL + HL) / 4; /* LL */
@@ -786,14 +786,14 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqp, int ovf
     if (oddh) {
         DSV_SBC *dpA = dst + (y + 0) * width;
         for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
-            LL = spLL[idx] << ovf_safety;
+            LL = ((uint32_t)spLL[idx]) << ovf_safety;
             LH = spLH[idx];
 
             dpA[x + 0] = (LL + LH) / 4; /* LL */
             dpA[x + 1] = (LL - LH) / 4; /* LH */
         }
         if (oddw) {
-            LL = spLL[idx] << ovf_safety;
+            LL = ((uint32_t)spLL[idx]) << ovf_safety;
 
             dpA[x + 0] = LL / 4; /* LL */
         }
