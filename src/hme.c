@@ -425,13 +425,13 @@ outofbounds(int i, int j, int nxb, int nyb, int y_w, int y_h, DSV_MV *mv)
 }
 
 static int
-invalid_block(DSV_FRAME *f, int bx, int by, int bw, int bh)
+invalid_block(DSV_FRAME *f, int bx, int by, int bw, int bh, int pad)
 {
     int b = f->border * DSV_FRAME_BORDER;
-    return bx < -b ||
-           by < -b ||
-           bx + bw >= (f->width + b) ||
-           by + bh >= (f->height + b);
+    return (bx - pad) < -b ||
+           (by - pad) < -b ||
+           (bx + bw + pad) >= (f->width + b) ||
+           (by + bh + pad) >= (f->height + b);
 }
 
 static int
@@ -1444,18 +1444,18 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
             best = 0;
             best_score = score_zero = UINT_MAX;
             for (k = 0; k < n; k++) {
-                DSV_PLANE refp;
                 int evx, evy, cost;
 
                 dx = DSV_SAR(cands[k]->u.mv.x, level);
                 dy = DSV_SAR(cands[k]->u.mv.y, level);
 
-                if (invalid_block(ref, bx + dx, by + dy, bw, bh)) {
+                if (invalid_block(ref, bx + dx, by + dy, bw, bh, (level == 0) ? 1 : 0)) {
                     continue;
                 }
 
-                dsv_plane_xy(ref, &refp, 0, bx + dx, by + dy);
-                score = hier_metr(level, srcp.data, srcp.stride, refp.data, refp.stride, bw, bh, &psy);
+                score = hier_metr(level, srcp.data, srcp.stride,
+                        DSV_GET_XY(rp, bx + dx, by + dy),
+                        rp->stride, bw, bh, &psy);
                 evx = MK_MV_COMP(dx * step, 0, 0);
                 evy = MK_MV_COMP(dy * step, 0, 0);
                 cost = mv_cost(mvf, params, i, j, evx, evy, hme->quant, level);
@@ -1495,6 +1495,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
                 }
             }
 #define FAST_DIAG 1
+            metr[0] = metr[1] = metr[2] = metr[3] = UINT_MAX;
             if (!good_enough) {
                 n = (level != 0 || (params->effort >= 2 && !FAST_DIAG)) ? N_SEARCH_PTS : (N_SEARCH_PTS / 2 + 1);
                 for (k = 0; k < n; k++) {
@@ -1503,6 +1504,11 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
 
                     tvx = dx + rectx[k];
                     tvy = dy + recty[k];
+
+                    if (invalid_block(ref, bx + tvx, by + tvy, bw, bh, (level == 0) ? 1 : 0)) {
+                        continue;
+                    }
+
                     score = hier_metr(level, srcp.data, sp->stride,
                             DSV_GET_XY(rp, bx + tvx, by + tvy),
                             rp->stride, bw, bh, &psy);
@@ -1538,18 +1544,24 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
 
                 tv[0] = rectx[pri] + rectx[sec] + rectx[m];
                 tv[1] = recty[pri] + recty[sec] + recty[m];
-                score = hier_metr(level, srcp.data, sp->stride,
-                        DSV_GET_XY(rp, bx + tv[0], by + tv[1]),
-                        rp->stride, bw, bh, &psy);
-                evx = MK_MV_COMP(tv[0] * step, 0, 0);
-                evy = MK_MV_COMP(tv[1] * step, 0, 0);
-                cost = mv_cost(mvf, params, i, j, evx, evy, hme->quant, level);
-                if (best > score + cost) {
-                    best = score;
-                    dx = tv[0];
-                    dy = tv[1];
-                    if (DO_GOOD_ENOUGH && score <= qthresh) {
-                        good_enough = 1;
+
+                if (!invalid_block(ref, bx + tv[0], by + tv[1], bw, bh, (level == 0) ? 1 : 0)) {
+                    score = hier_metr(level, srcp.data, sp->stride,
+                            DSV_GET_XY(rp, bx + tv[0], by + tv[1]),
+                            rp->stride, bw, bh, &psy);
+                    evx = MK_MV_COMP(tv[0] * step, 0, 0);
+                    evy = MK_MV_COMP(tv[1] * step, 0, 0);
+                    cost = mv_cost(mvf, params, i, j, evx, evy, hme->quant, level);
+                    if (best > score + cost) {
+                        best = score;
+                        dx = tv[0];
+                        dy = tv[1];
+                        if (DO_GOOD_ENOUGH && score <= qthresh) {
+                            good_enough = 1;
+                        }
+                    } else {
+                        dx += rectx[m];
+                        dy += recty[m];
                     }
                 } else {
                     dx += rectx[m];
@@ -1575,7 +1587,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
                 fpely = mv->u.mv.y;
 
                 if (params->effort >= 4) {
-                    if (!invalid_block(ref, bx + lax, by + lay, bw, bh)) {
+                    if (!invalid_block(ref, bx + lax, by + lay, bw, bh, 1)) {
                         DSV_MV tmpv;
                         /* first search local average from parents */
                         tmpv.u.mv.x = lax;
