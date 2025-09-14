@@ -59,11 +59,13 @@ pub fn build(b: *std.Build) void {
             const dist_target = b.resolveTargetQuery(query);
             const dist_bin = b.addExecutable(.{
                 .name = b.fmt("dsv2-{s}", .{query.zigTriple(b.allocator) catch @panic("oom")}),
-                .target = dist_target,
-                .link_libc = true,
-                .optimize = .ReleaseFast,
-                .strip = true,
                 .linkage = if (query.os_tag == .macos) .dynamic else .static,
+                .root_module = b.createModule(.{
+                    .target = dist_target,
+                    .link_libc = true,
+                    .optimize = .ReleaseFast,
+                    .strip = true,
+                }),
             });
             addDsvSources(dist_bin);
 
@@ -76,12 +78,14 @@ pub fn build(b: *std.Build) void {
     // Create the executable
     const bin = b.addExecutable(.{
         .name = "dsv2",
-        .target = target,
-        // uses libc
-        .link_libc = true,
-        .optimize = optimize,
-        .strip = strip,
         .linkage = linkage,
+        .root_module = b.createModule(.{
+            .target = target,
+            // uses libc
+            .link_libc = true,
+            .optimize = optimize,
+            .strip = strip,
+        }),
     });
     addDsvSources(bin);
     b.installArtifact(bin);
