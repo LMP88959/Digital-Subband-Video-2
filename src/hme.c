@@ -428,7 +428,10 @@ static int
 invalid_block(DSV_FRAME *f, int bx, int by, int bw, int bh)
 {
     int b = f->border * DSV_FRAME_BORDER;
-    return bx < -b || by < -b || bx + bw > f->width + b || by + bh > f->height + b;
+    return bx < -b ||
+           by < -b ||
+           bx + bw >= (f->width + b) ||
+           by + bh >= (f->height + b);
 }
 
 static int
