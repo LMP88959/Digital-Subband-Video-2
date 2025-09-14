@@ -1449,7 +1449,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
                 dx = DSV_SAR(cands[k]->u.mv.x, level);
                 dy = DSV_SAR(cands[k]->u.mv.y, level);
 
-                if (invalid_block(ref, bx + dx, by + dy, bw, bh, (level == 0) ? 1 : 0)) {
+                if (invalid_block(ref, bx + dx, by + dy, bw, bh, 0)) {
                     continue;
                 }
 
@@ -1505,7 +1505,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
                     tvx = dx + rectx[k];
                     tvy = dy + recty[k];
 
-                    if (invalid_block(ref, bx + tvx, by + tvy, bw, bh, (level == 0) ? 1 : 0)) {
+                    if (invalid_block(ref, bx + tvx, by + tvy, bw, bh, 0)) {
                         continue;
                     }
 
@@ -1545,7 +1545,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
                 tv[0] = rectx[pri] + rectx[sec] + rectx[m];
                 tv[1] = recty[pri] + recty[sec] + recty[m];
 
-                if (!invalid_block(ref, bx + tv[0], by + tv[1], bw, bh, (level == 0) ? 1 : 0)) {
+                if (!invalid_block(ref, bx + tv[0], by + tv[1], bw, bh, 0)) {
                     score = hier_metr(level, srcp.data, sp->stride,
                             DSV_GET_XY(rp, bx + tv[0], by + tv[1]),
                             rp->stride, bw, bh, &psy);
@@ -1587,7 +1587,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
                 fpely = mv->u.mv.y;
 
                 if (params->effort >= 4) {
-                    if (!invalid_block(ref, bx + lax, by + lay, bw, bh, 1)) {
+                    if (!invalid_block(ref, bx + lax, by + lay, bw, bh, 4)) {
                         DSV_MV tmpv;
                         /* first search local average from parents */
                         tmpv.u.mv.x = lax;
@@ -1600,7 +1600,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
                         }
                     }
 
-                    if (!found && !good_enough) {
+                    if (!found && !good_enough && !invalid_block(ref, bx + fpelx, by + fpely, bw, bh, 4)) {
                         /* if nothing so far, search final MV from HME */
                         best = subpixel_ME(params, mvf, mv, src, ref, i, j, best_fp, hme->quant, bx, by, bw, bh, &psy, &found);
                     }
