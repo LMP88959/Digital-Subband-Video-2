@@ -1350,7 +1350,7 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
             unsigned metr[4], best, score_zero, score, best_score;
             unsigned qthresh, good_enough = 0;
             int lax = 0, lay = 0;
-            unsigned var_src, avg_src;
+            unsigned var_src = 0, avg_src = 0;
             PSY_COEFS psy;
             /* defaults */
             psy.err_weight = 2;
@@ -1566,37 +1566,34 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
                 int fpelx, fpely; /* full-pel MV coords */
                 unsigned yarea = bw * bh;
                 unsigned best_fp = best;
+                int found = 0;
 
                 fpelx = mv->u.mv.x;
                 fpely = mv->u.mv.y;
 
                 if (params->effort >= 4) {
-                    int found = 0;
-                    DSV_MV tmpv;
-                    int tfpx, tfpy;
-                    /* first search local average from parents */
-                    tmpv.u.mv.x = lax;
-                    tmpv.u.mv.y = lay;
-                    tfpx = tmpv.u.mv.x;
-                    tfpy = tmpv.u.mv.y;
+                    if (!invalid_block(ref, bx + lax, by + lay, bw, bh)) {
+                        DSV_MV tmpv;
+                        /* first search local average from parents */
+                        tmpv.u.mv.x = lax;
+                        tmpv.u.mv.y = lay;
+                        best = subpixel_ME(params, mvf, &tmpv, src, ref, i, j, best_fp, hme->quant, bx, by, bw, bh, &psy, &found);
+                        if (found) {
+                            mv->u.all = tmpv.u.all;
+                            fpelx = lax;
+                            fpely = lay;
+                        }
+                    }
 
-                    best = subpixel_ME(params, mvf, &tmpv, src, ref, i, j, best_fp, hme->quant, bx, by, bw, bh, &psy, &found);
-                    if (found) {
-                        mv->u.all = tmpv.u.all;
-                        fpelx = tfpx;
-                        fpely = tfpy;
-                    } else if (!good_enough) {
+                    if (!found && !good_enough) {
                         /* if nothing so far, search final MV from HME */
                         best = subpixel_ME(params, mvf, mv, src, ref, i, j, best_fp, hme->quant, bx, by, bw, bh, &psy, &found);
-                    } else {
-                        mv->u.mv.x = MK_MV_COMP(fpelx, 0, 0);
-                        mv->u.mv.y = MK_MV_COMP(fpely, 0, 0);
                     }
-                } else {
+                }
+                if (!found) {
                     mv->u.mv.x = MK_MV_COMP(fpelx, 0, 0);
                     mv->u.mv.y = MK_MV_COMP(fpely, 0, 0);
                 }
-
                 /* mode decision + block metric gathering
                  * src = source block
                  * ogr = original ref frame block at full-pel motion (x, y)
@@ -1950,8 +1947,13 @@ global_motion(DSV_MV *vecs, DSV_PARAMS *p, int level, int *gx, int *gy)
             nblk++;
         }
     }
-    *gx = avgx * 2 / nblk; /* scale up for next highest level */
-    *gy = avgy * 2 / nblk;
+    if (nblk) {
+        *gx = avgx * 2 / nblk; /* scale up for next highest level */
+        *gy = avgy * 2 / nblk;
+    } else {
+        *gx = 0;
+        *gy = 0;
+    }
 }
 
 extern int
