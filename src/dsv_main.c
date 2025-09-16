@@ -616,6 +616,10 @@ encode(void)
         DSV_ERROR(("given dimensions were strange: %dx%d", w, h));
         return EXIT_FAILURE;
     }
+    if ((w & 1) || (h & 1)) {
+        DSV_ERROR(("DSV2 does not support odd dimensions: %dx%d", w, h));
+        return EXIT_FAILURE;
+    }
     if (fps <= 0) {
         DSV_WARNING(("given frame rate was <= 0! setting to 1/1"));
         md.fps_num = 1;
