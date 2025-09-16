@@ -1306,7 +1306,6 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
     DSV_MV *mv;
     DSV_MV *mvf, *parent = NULL;
     DSV_PARAMS *params = hme->params;
-    DSV_MV zero;
     int i, j, y_w, y_h, nxb, nyb, step, hs, vs;
     unsigned parent_mask, total_err = 0;
     int nintra = 0; /* number of intra blocks */
@@ -1337,8 +1336,6 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
     if (level < hme->enc->pyramid_levels) {
         parent = hme->mvf[level + 1];
     }
-
-    memset(&zero, 0, sizeof(zero));
 
     step = 1 << level;
     parent_mask = ~((step << 1) - 1);
