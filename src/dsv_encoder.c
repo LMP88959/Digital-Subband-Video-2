@@ -520,7 +520,7 @@ compute_auto_filter(DSV_ENCODER *enc, DSV_ENCDATA *d)
 {
     int intra_pct, scblocks, chaos, psy;
     int norm, relerr;
-    int avg_chaos, thresh = 8;
+    int avg_chaos, thresh;
     DSV_PARAMS *p = &d->params;
 
     intra_pct = enc->curr_intra_pct;
@@ -533,11 +533,12 @@ compute_auto_filter(DSV_ENCODER *enc, DSV_ENCDATA *d)
     relerr = ((SQR(intra_pct) + scblocks + enc->avg_err * chaos) / MAX(norm, 1));
     relerr = (relerr + (relerr * psy >> 7));
     avg_chaos = (enc->prev_chaos + chaos + 1) >> 1;
+    thresh = 8;
     thresh += thresh * psy >> 5;
-    thresh -= (MIN(avg_chaos, 48) * psy / (128 * (thresh - 2)));
+    thresh -= (MIN(avg_chaos, 48) * psy * MAX(enc->avg_err / 2, 1)  / (128 * (thresh - 2)));
     enc->auto_filter = chaos <= 1 || relerr > thresh;
 
-    DSV_DEBUG(("autofilter = %d (relerr: %d), (thresh: %d)",
+    DSV_INFO(("autofilter = %d (relerr: %d), (thresh: %d)",
             enc->auto_filter, relerr, thresh));
 }
 
@@ -586,7 +587,7 @@ scene_change_detection(DSV_ENCODER *enc, DSV_ENCDATA *d)
     shift = MAX(shift - likely_sc, 5);
 
     blks = MAX((dchaos / 16) + (enc->avg_err / 8), 1) * scblocks * MAX(complexity, 1) * MAX(closefac, 1) >> (shift + 1);
-    DSV_DEBUG(("frame %d --- avg_err=%d, avg_mot=%d, pchaos=%d%%, chaos=%d%%, complexity=%d, intra_pct=%d%%, raw_scb=%d%%, adj_scb=%d%%", d->fnum, enc->avg_err, avgmot, enc->prev_chaos, chaos, complexity, intra_pct, raw_scb, blks));
+    DSV_INFO(("frame %d --- avg_err=%d, avg_mot=%d, pchaos=%d%%, chaos=%d%%, complexity=%d, intra_pct=%d%%, raw_scb=%d%%, adj_scb=%d%%", d->fnum, enc->avg_err, avgmot, enc->prev_chaos, chaos, complexity, intra_pct, raw_scb, blks));
 
     sc = (enc->do_scd && ((blks > 120) ||
             (blks > enc->scene_change_pct
