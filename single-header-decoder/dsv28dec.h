@@ -738,7 +738,7 @@ extern void
 d28_mk_buf(DSV_BUF *buf, int size)
 {
     memset(buf, 0, sizeof(*buf));
-    buf->data = d28_alloc(size);
+    buf->data = (uint8_t*) d28_alloc(size);
     buf->len = size;
 }
 
@@ -994,7 +994,7 @@ alloc_frame(void)
 {
     DSV_FRAME *frame;
 
-    frame = d28_alloc(sizeof(*frame));
+    frame = (DSV_FRAME*) d28_alloc(sizeof(*frame));
     frame->refcount = 1;
     return frame;
 }
@@ -1027,7 +1027,7 @@ mk_coefs(DSV_COEFS *c, int format, int width, int height)
     c[2].height = chroma_height;
 
     c2len = c[2].width * c[2].height;
-    c[0].data = d28_alloc((c0len + c1len + c2len) * sizeof(DSV_SBC));
+    c[0].data = (DSV_SBC*) d28_alloc((c0len + c1len + c2len) * sizeof(DSV_SBC));
     c[1].data = c[0].data + c0len;
     c[2].data = c[0].data + c0len + c1len;
 }
@@ -1076,7 +1076,7 @@ d28_mk_frame(int format, int width, int height, int border)
 
     f->planes[2].len = f->planes[2].stride * (f->planes[2].h + ext * 2);
 
-    f->alloc = d28_alloc(f->planes[0].len + f->planes[1].len + f->planes[2].len);
+    f->alloc = (uint8_t*) d28_alloc(f->planes[0].len + f->planes[1].len + f->planes[2].len);
 
     f->planes[0].data = f->alloc + f->planes[0].stride * ext + ext;
     f->planes[1].data = f->alloc + f->planes[0].len + f->planes[1].stride * ext + ext;
@@ -1250,10 +1250,10 @@ extend_plane(DSV_FRAME *frame, int p)
     uint8_t *ls, *rs, *ts, *bs; /* left, right, top, bottom strips */
     int tl, tr, bl, br; /* top left, top right, bottom left, bottom right */
 
-    ls = d28_alloc(4 * height / SUBDIV);
-    rs = d28_alloc(4 * height / SUBDIV);
-    ts = d28_alloc(4 * width / SUBDIV);
-    bs = d28_alloc(4 * width / SUBDIV);
+    ls = (uint8_t*) d28_alloc(4 * height / SUBDIV);
+    rs = (uint8_t*) d28_alloc(4 * height / SUBDIV);
+    ts = (uint8_t*) d28_alloc(4 * width / SUBDIV);
+    bs = (uint8_t*) d28_alloc(4 * width / SUBDIV);
     downsample_strip(frame, p, 0, ls);
     downsample_strip(frame, p, 1, rs);
     downsample_strip(frame, p, 2, ts);
@@ -1346,7 +1346,7 @@ alloc_temp(int size)
             temp_buf = NULL;
         }
 
-        temp_buf = d28_alloc(temp_bufsz * sizeof(DSV_SBC));
+        temp_buf = (DSV_SBC*) d28_alloc(temp_bufsz * sizeof(DSV_SBC));
         if (temp_buf == NULL) {
             DSV_ERROR(("out of memory"));
         }
@@ -3417,7 +3417,7 @@ d28_get_metadata(DSV_DECODER *d)
 {
     DSV_META *meta;
 
-    meta = d28_alloc(sizeof(DSV_META));
+    meta = (DSV_META*) d28_alloc(sizeof(DSV_META));
     memcpy(meta, &d->vidmeta, sizeof(DSV_META));
 
     return meta;
@@ -3472,7 +3472,7 @@ d28_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
         return DSV_DEC_OK;
     }
 
-    img = d28_alloc(sizeof(DSV_IMAGE));
+    img = (DSV_IMAGE*) d28_alloc(sizeof(DSV_IMAGE));
     img->refcount = 1;
 
     img->params.vidmeta = meta;
@@ -3524,10 +3524,10 @@ d28_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
     }
     bs_align(&bs);
     /* read frame metadata (stability / skip, motion data / adaptive quant) */
-    img->blockdata = d28_alloc(p->nblocks_h * p->nblocks_v);
+    img->blockdata = (uint8_t*) d28_alloc(p->nblocks_h * p->nblocks_v);
     decode_stability_blocks(img, &bs, buffer, has_ref, stats);
     if (has_ref) {
-        mvs = d28_alloc(sizeof(DSV_MV) * p->nblocks_h * p->nblocks_v);
+        mvs = (DSV_MV*) d28_alloc(sizeof(DSV_MV) * p->nblocks_h * p->nblocks_v);
         decode_motion(img, mvs, &bs, buffer, stats);
     } else {
         decode_intra_meta(img, &bs, buffer, stats);
