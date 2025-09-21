@@ -6,7 +6,7 @@ die () {
 }
 
 if [[ "$#" -eq 0 ]]; then
-	die "usage dsv2mp4 video.dsv (optional: output.mp4)"
+	die "usage: dsv2mp4 video.dsv (optional: output.mp4)"
 fi
 if [[ "$#" -eq 2 ]]; then
 	output=$2	
