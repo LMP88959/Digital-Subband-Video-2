@@ -14,16 +14,5 @@ else
 	file="$1"
 	output=${file%.dsv}.mp4
 fi
-	
-tmpdir="$(mktemp -d)"
-trap 'rm -rf -- "$tmpdir"' EXIT
 
-y4mfile="$tmpdir/temp.y4m"
-
-cmd="dsv2 d -y -v -inp=$1 -out=${y4mfile} -y4m=1 -drawinfo=0"
-$cmd
-
-cmd="ffmpeg -loglevel quiet -nostats -hide_banner -i ${y4mfile} -c:v libx264 -crf 10 -preset fast $output"
-$cmd
-
-rm -rf -- "$tmpdir"
+dsv2 d -y -inp=$1 -y4m=1 -drawinfo=0 | ffmpeg -loglevel warning -hide_banner -i pipe: -c:v libx264 -crf 10 -preset fast $output
