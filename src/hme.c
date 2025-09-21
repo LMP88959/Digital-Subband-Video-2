@@ -88,7 +88,6 @@ chroma_analysis(CHROMA_PSY *c, int y, int u, int v)
 #define HP_STRIDE (SP_DIM * 2)
 #define QP_STRIDE (SP_DIM * 4)
 
-#define METRIC_NORM 7 /* sum of 2^weights should equal this */
 typedef struct {
     int err_weight;
     int tex_weight;
@@ -915,9 +914,9 @@ test_subblock_intra_y(DSV_PARAMS *params, DSV_MV *refmv, DSV_MV *mv,
     if (sbw == 0 || sbh == 0) {
         return;
     }
-    psy.avg_weight = 2;
     psy.err_weight = 0;
     psy.tex_weight = 1;
+    psy.avg_weight = 2;
     psyscale = dsv_spatial_psy_factor(params, -1);
     bit_index = 0;
     /* increase detail bias proportionally to how similar the MV was to its neighbors */
@@ -1012,7 +1011,7 @@ test_subblock_intra_c(
     } else {
         thr = detail_src;
     }
-    if (sbw == 0 || sbh == 0 || mad <= thr || thr > 32 || MV_LT(mv, 4)) {
+    if (sbw == 0 || sbh == 0 || mad <= thr || thr > 64 || MV_LT(mv, 4)) {
         return;
     }
     avg_ramp = avg_src * avg_src >> 8;
@@ -1028,16 +1027,13 @@ test_subblock_intra_c(
             }
             c_average(sp, cbx + f, cby + g, sbw, sbh, &uavg_src, &vavg_src);
             c_average(rp, cbmx + f, cbmy + g, sbw, sbh, &uavg_mvr, &vavg_mvr);
-            if (!already_intra) {
-                erru = abs(uavg_src - uavg_mvr);
-                errv = abs(vavg_src - vavg_mvr);
-            } else {
-                erru = SQR(uavg_src - uavg_mvr);
-                errv = SQR(vavg_src - vavg_mvr);
-            }
+
+            erru = SQR(uavg_src - uavg_mvr);
+            errv = SQR(vavg_src - vavg_mvr);
+
             /* scale error by squared average luma since I believe chroma error
              * is less noticeable in darker areas (just my observation) */
-            dif = MAX(erru, errv) * avg_ramp >> 8;
+            dif = (erru + errv) * avg_ramp >> 8;
 
             if (dif > thr) {
                 /* set as intra */
@@ -1056,11 +1052,12 @@ static unsigned
 subpixel_ME(
         DSV_PARAMS *params,
         DSV_MV *mvf, /* motion vector field */
-        DSV_MV *mv, /* current full-pixel motion vector */
+        DSV_MV *mv, /* OUTPUT: will return just the subpel components */
+        int fpelx, int fpely,
         DSV_FRAME *src, DSV_FRAME *ref,
         int i, int j,
         unsigned best, int quant,
-        int bx, int by, int bw, int bh, PSY_COEFS *psy, int *found)
+        int bx, int by, int bw, int bh, PSY_COEFS *psy)
 {
     static uint8_t tmph[(2 + HP_STRIDE) * (2 + HP_STRIDE)];
     static uint8_t tmpq[(4 + QP_STRIDE) * (4 + QP_STRIDE)];
@@ -1075,10 +1072,10 @@ subpixel_ME(
     int *testv[3];
     int area_ratio, iarea_ratio;
 
+    mv->u.mv.x = 0; /* set default result as full pel */
+    mv->u.mv.y = 0;
+
     if (best == 0) {
-        mv->u.mv.x = MK_MV_COMP(mv->u.mv.x, 0, 0);
-        mv->u.mv.y = MK_MV_COMP(mv->u.mv.y, 0, 0);
-        *found = 1;
         return best;
     }
 
@@ -1087,7 +1084,7 @@ subpixel_ME(
     testv[2] = diag;
     yarea = bw * bh;
     dsv_plane_xy(src, &srcp, 0, bx, by);
-    dsv_plane_xy(ref, &refp, 0, bx + mv->u.mv.x, by + mv->u.mv.y);
+    dsv_plane_xy(ref, &refp, 0, bx + fpelx, by + fpely);
 
     for (n = 0; n < 4; n++) {
         quad[n] = sse_wxh(srcp.data, srcp.stride,
@@ -1103,8 +1100,8 @@ subpixel_ME(
     yy = by + ((bh >> 1) - ((SP_SAD_SZ + 1) / 2));
     dsv_plane_xy(src, &srcsp, 0, xx, yy);
     dsv_plane_xy(ref, &refsp, 0,
-            xx + mv->u.mv.x - 1, /* offset by 1 in x and y so */
-            yy + mv->u.mv.y - 1);/* we can do negative hpel */
+            xx + fpelx - 1, /* offset by 1 in x and y so */
+            yy + fpely - 1);/* we can do negative hpel */
     /* interpolate into half-pel then into quarter-pel */
     hpel(tmph, refsp.data, refsp.stride);
     qpel(tmpq, tmph);
@@ -1138,7 +1135,7 @@ subpixel_ME(
     imq = tmpq + QP_OFFSET(1, 1);
 
     for (n = 0; n <= 6; n++) {
-        int evx, evy, cost, t[2];
+        int evx, evy, t[2];
         if (n == 6) {
             t[0] = pri[0] + diag[0];
             t[1] = pri[1] + diag[1];
@@ -1151,17 +1148,18 @@ subpixel_ME(
             continue;
         }
         score = qpsad(srcsp.data, srcsp.stride, imq + t[0] + t[1] * QP_STRIDE, psy);
-        evx = MK_MV_COMP(mv->u.mv.x, 0, t[0]);
-        evy = MK_MV_COMP(mv->u.mv.y, 0, t[1]);
-        cost = mv_cost(mvf, params, i, j, evx, evy, quant, 0);
-        if (best > score + cost) {
+
+        evx = MK_MV_COMP(fpelx, 0, t[0]);
+        evy = MK_MV_COMP(fpely, 0, t[1]);
+        score += mv_cost(mvf, params, i, j, evx, evy, quant, 0);
+
+        if (best > score) {
             best = score;
             SETVV(bestv, t);
-            *found = 1;
         }
     }
-    mv->u.mv.x = MK_MV_COMP(mv->u.mv.x, 0, bestv[0]);
-    mv->u.mv.y = MK_MV_COMP(mv->u.mv.y, 0, bestv[1]);
+    mv->u.mv.x = bestv[0];
+    mv->u.mv.y = bestv[1];
     return best * iarea_ratio >> 3;
 }
 
@@ -1300,6 +1298,78 @@ find_inliers(DSV_MV **list, DSV_MV **newl, int n, int *ax, int *ay)
 }
 
 static int
+refine_best_fpel_cand(DSV_HME *hme, int level, int i, int j,
+       /* both input and output: */ int *bestx, int *besty, unsigned *best,
+        unsigned good_enough_thresh,
+        DSV_PLANE *src_block,
+        int bx, int by, int bw, int bh, PSY_COEFS *psy)
+{
+    int k, tvx, tvy, step;
+    unsigned score, metr[4];
+    DSV_FRAME *ref;
+    DSV_PLANE *rp;
+
+    step = 1 << level;
+    ref = hme->ref[level];
+    rp = ref->planes + 0;
+
+    metr[0] = metr[1] = metr[2] = metr[3] = UINT_MAX;
+
+retry:
+    for (k = 0; k < (N_SEARCH_PTS / 2 + 1); k++) {
+        tvx = *bestx + rectx[k];
+        tvy = *besty + recty[k];
+
+        if (invalid_block(ref, bx + tvx, by + tvy, bw, bh, 0)) {
+            continue;
+        }
+
+        score = hier_metr(level, src_block->data, src_block->stride,
+                DSV_GET_XY(rp, bx + tvx, by + tvy), rp->stride, bw, bh, psy);
+
+        if (k >= 1 && k <= 4) {
+            metr[k - 1] = score;
+        }
+        if (DO_GOOD_ENOUGH && level == 0 && (!tvx && !tvy) && score <= good_enough_thresh) {
+            *bestx = tvx;
+            *besty = tvy;
+            *best = score;
+            return 1;
+        }
+        score += mv_cost(hme->mvf[level], hme->params, i, j,
+                MK_MV_COMP(tvx * step, 0, 0),
+                MK_MV_COMP(tvy * step, 0, 0), hme->quant, level);
+        if (*best > score) {
+            *best = score;
+            *bestx = tvx;
+            *besty = tvy;
+            goto retry;
+        }
+    }
+
+    /* diagonal check */
+    tvx = *bestx + rectx[(metr[0] <= metr[1]) ? 1 : 2];
+    tvy = *besty + recty[(metr[2] <= metr[3]) ? 3 : 4];
+
+    if (invalid_block(ref, bx + tvx, by + tvy, bw, bh, 0)) {
+        return 0;
+    }
+    score = hier_metr(level, src_block->data, src_block->stride,
+            DSV_GET_XY(rp, bx + tvx, by + tvy), rp->stride, bw, bh, psy);
+
+    score += mv_cost(hme->mvf[level], hme->params, i, j,
+            MK_MV_COMP(tvx * step, 0, 0),
+            MK_MV_COMP(tvy * step, 0, 0), hme->quant, level);
+    if (*best > score) {
+        *best = score;
+        *bestx = tvx;
+        *besty = tvy;
+        goto retry;
+    }
+    return 0;
+}
+
+static int
 refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, int gx, int gy)
 {
     DSV_FRAME *src, *ref, *ogr;
@@ -1347,9 +1417,9 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
             int bx, by, bw, bh;
             int k, m, n = 0;
             DSV_MV *cands[128];
-            unsigned metr[4], best, score_zero, score, best_score;
+            unsigned best, score_zero, score, best_score;
             unsigned qthresh, good_enough = 0;
-            int lax = 0, lay = 0;
+            int lax = 0, lay = 0, motion_bias;
             unsigned var_src = 0, avg_src = 0;
             PSY_COEFS psy;
             /* defaults */
@@ -1370,28 +1440,43 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
             dsv_plane_xy(src, &srcp, 0, bx, by);
             bw = MIN(srcp.w, y_w);
             bh = MIN(srcp.h, y_h);
-
             ADD_MV_XY(cands, 0, 0);
+            motion_bias = y_w * y_h;
             if (!SQUARED_LEVELS) {
+                int tvar;
                 /* TODO this logic could use much more testing */
-                int sigmot;
-                sigmot = (abs(gx) >= 3) || (abs(gy) >= 3);
                 var_src = block_detail(srcp.data, srcp.stride, bw, bh, &avg_src);
 
+                tvar = var_src + SQR(var_src >> 10);
+                tvar = ((8 * tvar * hme->quant >> 9) / (bw * bh));
+                /* motion_bias is directly proportional with how much detail + estimated features the block contains */
+                if (tvar) {
+                    int qtex, hvar, npeaks;
+                    uint16_t hist[NHIST];
+                    uint8_t peaks[NHIST];
+
+                    /* TODO this logic could use much more testing */
+                    var_src = block_detail(srcp.data, srcp.stride, bw, bh, &avg_src);
+
+                    hvar = block_hist_var(srcp.data, srcp.stride, bw, bh, hist);
+                    qtex = quant_tex(srcp.data, srcp.stride, bw, bh);
+                    npeaks = block_peaks(srcp.data, srcp.stride, bw, bh, peaks, hist, avg_src);
+
+                    motion_bias += tvar * (hvar - qtex) * npeaks;
+                }
+                motion_bias = MAX(motion_bias, 0) / (2 + (abs(gx) + abs(gy)));
                 if (var_src <= (unsigned) (8 * bw * bh * hme->quant >> 9)) {
                     psy.err_weight = 2;
                     psy.tex_weight = 1;
-                    psy.avg_weight = 0;
+                    psy.avg_weight = 2;
+                    motion_bias = 0; /* helps keep smooth parts smooth */
                 } else {
                     psy.err_weight = 1;
                     psy.tex_weight = 2;
-                    psy.avg_weight = 0;
+                    psy.avg_weight = 1;
                 }
-
-                if (sigmot) {
-                    sigmot = psy.err_weight;
-                    psy.err_weight = psy.tex_weight;
-                    psy.tex_weight = sigmot;
+                if (var_src > (unsigned) (24 * bw * bh)) {
+                    psy.avg_weight = 0;
                 }
             }
             if (parent != NULL) {
@@ -1434,17 +1519,20 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
                     }
                 }
             }
-
+            /* scale candidates down to the resolution of the current pyramid level */
+            for (k = 0; k < n; k++) {
+                cands[k]->u.mv.x = DSV_SAR(cands[k]->u.mv.x, level);
+                cands[k]->u.mv.y = DSV_SAR(cands[k]->u.mv.y, level);
+            }
             /* we only care about unique non-zero vectors */
             n = remove_dupes(cands, n);
 
             best = 0;
             best_score = score_zero = UINT_MAX;
+            /* find best candidate */
             for (k = 0; k < n; k++) {
-                int evx, evy, cost;
-
-                dx = DSV_SAR(cands[k]->u.mv.x, level);
-                dy = DSV_SAR(cands[k]->u.mv.y, level);
+                dx = cands[k]->u.mv.x;
+                dy = cands[k]->u.mv.y;
 
                 if (invalid_block(ref, bx + dx, by + dy, bw, bh, 0)) {
                     continue;
@@ -1453,36 +1541,39 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
                 score = hier_metr(level, srcp.data, srcp.stride,
                         DSV_GET_XY(rp, bx + dx, by + dy),
                         rp->stride, bw, bh, &psy);
-                evx = MK_MV_COMP(dx * step, 0, 0);
-                evy = MK_MV_COMP(dy * step, 0, 0);
-                cost = mv_cost(mvf, params, i, j, evx, evy, hme->quant, level);
-                if (best_score > score + cost) {
-                    best_score = score;
-                    best = k;
-                }
                 if (dx == 0 && dy == 0) {
                     score_zero = score;
                 }
+                score += mv_cost(mvf, params, i, j,
+                        MK_MV_COMP(dx * step, 0, 0),
+                        MK_MV_COMP(dy * step, 0, 0), hme->quant, level);
+                if (dx == lax && dy == lay) {
+                    score = MAX((int) score - (motion_bias >> level), 0);
+                }
+                if (best_score > score) {
+                    best_score = score;
+                    best = k;
+                }
             }
 
-            dx = DSV_SAR(cands[best]->u.mv.x, level);
-            dy = DSV_SAR(cands[best]->u.mv.y, level);
-            dx = CLAMP(dx, (-bw - bx), (ref->width - bx));
-            dy = CLAMP(dy, (-bh - by), (ref->height - by));
+            dx = cands[best]->u.mv.x;
+            dy = cands[best]->u.mv.y;
 
             mv = &mvf[i + j * nxb];
             memset(mv, 0, sizeof(*mv));
 
-            /* full-pel search around best candidate vector */
             best = best_score;
             m = 0;
 
-            qthresh = (unsigned) (hme->quant * bw * bh >> 10);
-            if (DO_GOOD_ENOUGH && ((abs(dx) <= 1 && abs(dy) <= 1))) {
+            qthresh = (unsigned) (hme->quant * bw * bh >> 11);
+            if (DO_GOOD_ENOUGH) {
                 /* compare to source reference frame */
-                unsigned zoscore = fastmetr(srcp.data, sp->stride,
+                unsigned zoscore = fastmetr(srcp.data, srcp.stride,
                                     DSV_GET_XY(&ogr->planes[0], bx, by),
                                     ogr->planes[0].stride, bw, bh, &psy);
+                if (abs(dx) <= 1 && abs(dy) <= 1) {
+                    qthresh *= 2;
+                }
                 if (zoscore < qthresh) {
                     /* bias towards zero vector */
                     best = (level == 0) ? score_zero : 0;
@@ -1491,85 +1582,16 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
                     good_enough = 1;
                 }
             }
-#define FAST_DIAG 1
-            metr[0] = metr[1] = metr[2] = metr[3] = UINT_MAX;
+
             if (!good_enough) {
-                n = (level != 0 || (params->effort >= 2 && !FAST_DIAG)) ? N_SEARCH_PTS : (N_SEARCH_PTS / 2 + 1);
-                for (k = 0; k < n; k++) {
-                    int evx, evy, cost;
-                    int tvx, tvy;
-
-                    tvx = dx + rectx[k];
-                    tvy = dy + recty[k];
-
-                    if (invalid_block(ref, bx + tvx, by + tvy, bw, bh, 0)) {
-                        continue;
-                    }
-
-                    score = hier_metr(level, srcp.data, sp->stride,
-                            DSV_GET_XY(rp, bx + tvx, by + tvy),
-                            rp->stride, bw, bh, &psy);
-
-                    if (FAST_DIAG && k >= 1 && k <= 4) {
-                        metr[k - 1] = score;
-                    }
-
-                    evx = MK_MV_COMP(tvx * step, 0, 0);
-                    evy = MK_MV_COMP(tvy * step, 0, 0);
-                    cost = mv_cost(mvf, params, i, j, evx, evy, hme->quant, level);
-                    if (DO_GOOD_ENOUGH && level == 0) {
-                        if (score <= qthresh) {
-                            best = score;
-                            m = k;
-                            good_enough = 1;
-                            break;
-                        }
-                    }
-                    if (best > score + cost) {
-                        best = score;
-                        m = k;
-                    }
-                }
+                /* try to improve upon the best candidate vector by
+                 * searching in a rectangular fashion around it */
+                good_enough = refine_best_fpel_cand(hme, level, i, j,
+                        &dx, &dy, &best, qthresh,
+                        &srcp,
+                        bx, by, bw, bh, &psy);
             }
-#if FAST_DIAG
-            if (!good_enough) {
-                int tv[2], pri, sec;
-                int evx, evy, cost;
-
-                pri = metr[3] >= metr[2] ? 3 : 4;
-                sec = metr[1] >= metr[0] ? 1 : 2;
-
-                tv[0] = rectx[pri] + rectx[sec] + rectx[m];
-                tv[1] = recty[pri] + recty[sec] + recty[m];
-
-                if (!invalid_block(ref, bx + tv[0], by + tv[1], bw, bh, 0)) {
-                    score = hier_metr(level, srcp.data, sp->stride,
-                            DSV_GET_XY(rp, bx + tv[0], by + tv[1]),
-                            rp->stride, bw, bh, &psy);
-                    evx = MK_MV_COMP(tv[0] * step, 0, 0);
-                    evy = MK_MV_COMP(tv[1] * step, 0, 0);
-                    cost = mv_cost(mvf, params, i, j, evx, evy, hme->quant, level);
-                    if (best > score + cost) {
-                        best = score;
-                        dx = tv[0];
-                        dy = tv[1];
-                        if (DO_GOOD_ENOUGH && score <= qthresh) {
-                            good_enough = 1;
-                        }
-                    } else {
-                        dx += rectx[m];
-                        dy += recty[m];
-                    }
-                } else {
-                    dx += rectx[m];
-                    dy += recty[m];
-                }
-            }
-#else
-            dx += rectx[m];
-            dy += recty[m];
-#endif
-
+            /* scale vector back to full-resolution */
             mv->u.mv.x = dx * step;
             mv->u.mv.y = dy * step;
 
@@ -1577,35 +1599,36 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
             if (level == 0) {
                 int fpelx, fpely; /* full-pel MV coords */
                 unsigned yarea = bw * bh;
-                unsigned best_fp = best;
-                int found = 0;
+                unsigned best_fp;
 
                 fpelx = mv->u.mv.x;
                 fpely = mv->u.mv.y;
-
+                if (fpelx == lax && fpely == lay) {
+                    best += motion_bias;
+                }
+                best_fp = best;
+                mv->u.all = 0;
                 if (params->effort >= 4) {
+                    /* first search local average from parents */
                     if (!invalid_block(ref, bx + lax, by + lay, bw, bh, 4)) {
-                        DSV_MV tmpv;
-                        /* first search local average from parents */
-                        tmpv.u.mv.x = lax;
-                        tmpv.u.mv.y = lay;
-                        best = subpixel_ME(params, mvf, &tmpv, src, ref, i, j, best_fp, hme->quant, bx, by, bw, bh, &psy, &found);
-                        if (found) {
-                            mv->u.all = tmpv.u.all;
+                        best = subpixel_ME(params, mvf, mv, lax, lay, src, ref, i, j,
+                                best_fp,
+                                hme->quant, bx, by, bw, bh, &psy);
+                        if (mv->u.all) { /* found a subpel */
                             fpelx = lax;
                             fpely = lay;
                         }
                     }
 
-                    if (!found && !good_enough && !invalid_block(ref, bx + fpelx, by + fpely, bw, bh, 4)) {
+                    if (!mv->u.all && !good_enough && !invalid_block(ref, bx + fpelx, by + fpely, bw, bh, 4)) {
                         /* if nothing so far, search final MV from HME */
-                        best = subpixel_ME(params, mvf, mv, src, ref, i, j, best_fp, hme->quant, bx, by, bw, bh, &psy, &found);
+                        best = subpixel_ME(params, mvf, mv, fpelx, fpely, src, ref, i, j, best_fp, hme->quant, bx, by, bw, bh, &psy);
                     }
                 }
-                if (!found) {
-                    mv->u.mv.x = MK_MV_COMP(fpelx, 0, 0);
-                    mv->u.mv.y = MK_MV_COMP(fpely, 0, 0);
-                }
+
+                mv->u.mv.x = MK_MV_COMP(fpelx, 0, mv->u.mv.x);
+                mv->u.mv.y = MK_MV_COMP(fpely, 0, mv->u.mv.y);
+
                 /* mode decision + block metric gathering
                  * src = source block
                  * ogr = original ref frame block at full-pel motion (x, y)
@@ -1638,7 +1661,6 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
                     ogrmad = (ogrmad * ratio >> 5);
                     mad = DSV_UDIV_ROUND(best, yarea);
 
-                    var_src = block_detail(srcp.data, srcp.stride, bw, bh, &avg_src);
                     var_ref = block_detail(refp.data, refp.stride, bw, bh, &avg_ref);
                     /* weigh variance between src and ref by how much better the subpixel ME was */
                     dv = MIN(ratio, 32);
@@ -1670,9 +1692,9 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
                     neidif = dsv_neighbordif(mvf, params, i, j);
 
                     /* test skip mode */
-                    if (mv->u.all == 0 && hme->enc->skip_block_thresh >= 0 && !params->lossless) {
+                    if ((good_enough || mv->u.all == 0) && hme->enc->skip_block_thresh >= 0 && !params->lossless) {
                         unsigned cth, sth = skipt * yarea;
-                        unsigned zsub[3], dcd;
+                        unsigned zsub[3];
 
                         sth += 4 * var_src;
 
@@ -1691,10 +1713,15 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
                                 bx, by, bx, by, bw, bh,
                                 cbx, cby, cbx, cby, cbw, cbh, &psy);
                         cth = (chroma_ratio * sth * MAX(skipt, 1) >> (4 + 1));
-                        dcd = ABSDIF(avg_src, avg_ref);
-                        zsub[0] += SQR(dcd) * yarea;
+                        zsub[0] = (zsub[0] * ratio >> 5);
+                        zsub[1] = (zsub[1] * ratio >> 5);
+                        zsub[2] = (zsub[2] * ratio >> 5);
+
+                        zsub[0] += SQR((int) avg_src - (int) avg_ref) * yarea;
+
                         if (zsub[0] <= sth && zsub[1] <= cth && zsub[2] <= cth) {
                             DSV_MV_SET_SKIP(mv, 1);
+                            mv->u.all = 0;
                             mv->err = 0;
                             /* don't bother with anything else if we're skipping the block anyway */
                             goto skip;
@@ -1703,17 +1730,13 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
                     /* see if we can afford to zero out the residuals */
                     if (!oob_vector && !params->lossless) {
                         int y_prereq, c_prereq;
-                        int utex, vtex, carea = 4 * cbw * cbh;
-
-                        utex = block_tex(sp[1].data + cbx + cby * sp[1].stride, sp[1].stride, cbw, cbh);
-                        vtex = block_tex(sp[2].data + cbx + cby * sp[2].stride, sp[2].stride, cbw, cbh);
 
                         y_prereq = (avg_y_dif <= 2);
-                        c_prereq = (utex > carea || vtex > carea) &&
-                                !cpsy.greyish && (avg_c_dif <= 2);
+                        c_prereq = !cpsy.greyish && (avg_c_dif <= 2);
                         if (y_prereq || c_prereq) {
                             unsigned bsub[3];
                             unsigned xth = skipt * yarea;
+                            int utex, vtex, carea = 4 * cbw * cbh;
                             /* don't transmit residuals if the differences are minimal */
                             yuv_max_subblock_err(bsub, src, ref,
                                     bx, by, bx + fpelx, by + fpely, bw, bh,
@@ -1731,6 +1754,11 @@ refine_level(DSV_HME *hme, int level, int *scene_change_blocks, int *avg_err, in
                             if (y_prereq && bsub[0] < 4 * xth) {
                                 DSV_MV_SET_NOXMITY(mv, 1);
                             }
+
+                            utex = block_tex(sp[1].data + cbx + cby * sp[1].stride, sp[1].stride, cbw, cbh);
+                            vtex = block_tex(sp[2].data + cbx + cby * sp[2].stride, sp[2].stride, cbw, cbh);
+
+                            c_prereq &= (utex > carea || vtex > carea);
                             xth = chroma_ratio * xth >> 4;
                             if (c_prereq && bsub[1] < xth && bsub[2] < xth) {
                                 DSV_MV_SET_NOXMITC(mv, 1);
@@ -1769,6 +1797,7 @@ skip:
                     if (best > 0) {
                         num_eligible_blocks++;
                     }
+
                     if (DSV_MV_IS_INTRA(mv)) {
                         int merged = (mv->dc & DSV_SRC_DC_PRED) ? eprmd : eprmi;
                         if (mv->submask != DSV_MASK_ALL_INTRA) {
@@ -1940,6 +1969,7 @@ dsv_intra_analysis(DSV_FRAME *src, DSV_PARAMS *params)
     }
     return ba;
 }
+
 static void
 global_motion(DSV_MV *vecs, DSV_PARAMS *p, int level, int *gx, int *gy)
 {
