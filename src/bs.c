@@ -161,15 +161,13 @@ dsv_bs_get_ueg(DSV_BS *bs)
 static unsigned
 s2u(int v)
 {
-    int uv = -2 * v - 1;
-    return (unsigned) (uv ^ (uv >> (sizeof(int) * CHAR_BIT - 1)));
+    return (2 * v) ^ (v < 0 ? ~0 : 0);
 }
 
 static int
 u2s(unsigned uv)
 {
-    int v = (int) (uv + (unsigned) 1);
-    return v & 1 ? v >> 1 : -(v >> 1);
+    return (uv >> 1) ^ (-(uv & 1));
 }
 
 /* B. Encoding Type: signed interleaved exp-Golomb code (SEG) */
