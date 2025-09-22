@@ -946,8 +946,7 @@ bs_get_rice(DSV_BS *bs, int *rk, int damp)
 static int
 u2s(unsigned uv)
 {
-    int v = (int) (uv + (unsigned) 1);
-    return v & 1 ? v >> 1 : -(v >> 1);
+    return (uv >> 1) ^ (-(uv & 1));
 }
 
 /* B. Encoding Type: non-zero adaptive Rice code (NRC) */
