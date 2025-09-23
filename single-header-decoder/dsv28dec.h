@@ -1322,8 +1322,6 @@ d28_extend_frame(DSV_FRAME *frame)
 /* overflow safety */
 #define OVF_SAFETY_CONDITION (l >= 6 && l >= (lvls - 3) && !fm->params->lossless)
 
-#define SHREX4I 3
-#define SHREX4P 2
 #define SHREX2 3
 #define INV_SCALE52(x) ((x) * 2 / 5)
 #define INV_SCALE20(x) ((x) / 2)
@@ -1387,11 +1385,6 @@ reflect(int i, int n)
     }
     return i;
 }
-
-/* lower level (L4) filter */
-#define LL0 17
-#define LLS 7
-#define LLA (1 << (LLS - 1))
 
 /* chroma (CC) filter */
 #define CC0 3
@@ -1484,14 +1477,14 @@ static void
 ifilterLLI(DSV_SBC *out, DSV_SBC *in, int n, int s)
 {
     int i, even_n = n & ~1, h = n + (n & 1);
-    UNSCALE_UNPACK_SHREX(INV_SCALE52, INV_SCALE40, s, SHREX4I);
+    UNSCALE_UNPACK(INV_SCALE52, INV_SCALE40, s);
     /* Combined these for speed:
-       DO_5_TAP_LO(out, LL0, LLA, LLS, -=, s);
+       DO_SIMPLE_LO(out, -=, s);
        DO_SIMPLE_HI(out, +=, s);
     */
     out[0] -= out[s] >> 1;
     for (i = 2; i < even_n; i += 2) {
-        MAKE_5_TAP(out, LL0, LLA, LLS, -=, s);
+        out[i * s] -= (out[(i - 1) * s] + out[(i + 1) * s] + 2) >> 2;
         out[(i - 1) * s] += (out[(i - 2) * s] + out[i * s] + 1) >> 1;
     }
     if (n & 1) {
@@ -1506,14 +1499,14 @@ static void
 ifilterLLP(DSV_SBC *out, DSV_SBC *in, int n, int s)
 {
     int i, even_n = n & ~1, h = n + (n & 1);
-    UNSCALE_UNPACK_SHREX(INV_SCALE52, INV_SCALE30, s, SHREX4P);
+    UNSCALE_UNPACK(INV_SCALE52, INV_SCALE20, s);
     /* Combined these for speed:
-       DO_5_TAP_LO(out, LL0, LLA, LLS, -=, s);
+       DO_SIMPLE_LO(out, -=, s);
        DO_SIMPLE_HI(out, +=, s);
     */
     out[0] -= out[s] >> 1;
     for (i = 2; i < even_n; i += 2) {
-        MAKE_5_TAP(out, LL0, LLA, LLS, -=, s);
+        out[i * s] -= (out[(i - 1) * s] + out[(i + 1) * s] + 2) >> 2;
         out[(i - 1) * s] += (out[(i - 2) * s] + out[i * s] + 1) >> 1;
     }
     if (n & 1) {
