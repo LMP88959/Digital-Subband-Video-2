@@ -24,7 +24,10 @@
 #include <stdlib.h>
 #include <limits.h>
 #include <errno.h>
-
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
 /*
  *
  * effort:
@@ -1126,7 +1129,11 @@ startup(int argc, char **argv)
     if (!promptoverwrite(opts.out)) {
         return EXIT_FAILURE;
     }
-
+#ifdef _WIN32
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+    _setmode(_fileno(stderr), _O_BINARY);
+#endif
     if (encoding) {
         return encode();
     }
