@@ -14,6 +14,7 @@ gop="60"
 qp="50"
 chunk_per_gop="1"
 encode_args="-y4m=1 -gop=$gop -qp=$qp -rc_mode=0"
+ffmpeg_filter_args="" # ex: "-vf scale=640:480" or something
 
 # ---- internal
 
@@ -39,7 +40,11 @@ enc_chunk() {
 	countA=$(ffmpeg -t $starttime -i $video -nostats -vcodec copy -y -f rawvideo /dev/null 2>&1 | grep frame | awk '{print $2}')
 	countB=$(ffmpeg -t $endtime -i $video -nostats -vcodec copy -y -f rawvideo /dev/null 2>&1 | grep frame | awk '{print $2}')
     ((nframes=countB-countA))
-	cmd="${ffmpeg_cmd} -an -ss ${starttime} -i ${video} -f yuv4mpegpipe -frames:v ${nframes} - | ${dsv_executable} e -y -inp=- -out=savedsub${i}.dsv ${encode_args} -nfr=${nframes} -noeos=1"
+	startflag=""
+	if [ "$(echo "$starttime > 0" | bc)" -eq 1 ]; then
+		startflag="-ss ${starttime}" # for some reason ffmpeg didnt like -ss 0.00000 so just omit it if the start time is zero.
+	fi
+	cmd="${ffmpeg_cmd} -an ${startflag} -i ${video} ${ffmpeg_filter_args} -f yuv4mpegpipe -frames:v ${nframes} - | ${dsv_executable} e -y -inp=- -out=savedsub${i}.dsv ${encode_args} -nfr=${nframes} -noeos=1"
    # echo ${cmd}
 	eval $cmd
 }
