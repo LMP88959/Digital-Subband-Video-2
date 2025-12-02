@@ -61,7 +61,7 @@
  *     R[0...255] G[0...255] B[0...255]
  * =========================================
  *        BC2 as 8-bit per channel:
- *   BR[0...255] CS[48...251] CI[45...234]
+ *   BR[0...255] CS[48...251] CI[45...235]
  *
  *
  *    if "full_range" is set to 0,
@@ -73,9 +73,6 @@
  * =========================================
  */
 
-#ifndef CLAMP
-#define CLAMP(x, a, b) ((x) < (a) ? (a) : ((x) > (b) ? (b) : (x)))
-#endif
 
 #define SRGB_TO_BC2(r,g,b, br,cs,ci, full_range)        \
 do {                                                    \
@@ -86,38 +83,39 @@ do {                                                    \
     fb = bc2sqrndtab[b] * 20; /* premultiply */         \
     tb = bc2sqrttab[(81 * fr + 139 * fg + fb) / 240];   \
     ts = bc2sqrttab[(51 * fr + 169 * fg + fb) / 240];   \
-    ti = bc2sqrttab[(11 * fr + 9 * fg + fb) / 40] * 2;  \
-    fg = (tb + ts) / 16;                                \
-    fr = (tb - ts) / 2;                                 \
-    fb = (ti - (tb + ts)) / 16;                         \
+    ti = bc2sqrttab[(11 * fr + 9 * fg + fb) / 40];      \
+    fr = (tb + ts + 4) / 8;                             \
+    fg = (tb - ts);                                     \
+    fb = ((ti + 2) / 4) - fr;                           \
     if (full_range) {                                   \
-        br = bc2clipbuf[fg];                            \
+        br = bc2clipbuf[fr];                            \
     } else {                                            \
-        br = bc2clipbuf[fg] * 219 / 255 + 16;           \
+        br = ((bc2clipbuf[fr] * 219 + 254) / 255) + 16; \
     }                                                   \
-    cs = bc2clipbuf[fr + 128];                          \
+    cs = bc2clipbuf[fg + 128];                          \
     ci = bc2clipbuf[fb + 128];                          \
 } while(0)
 
+    
 #define BC2_TO_SRGB(br,cs,ci, r,g,b, full_range)        \
 do {                                                    \
     int fr, fg, fb;                                     \
     int tb, ts, ti;                                     \
-    fr = (full_range) ? ((br) * 16) : bc2expand[br];    \
-    fg = ((cs) - 128) * 2;                              \
-    fb = ((ci) - 128) * 16;                             \
+    fr = (full_range) ? ((br) * 8) : bc2expand[br];     \
+    fg = ((cs) - 128);                                  \
+    fb = ((ci) - 128) * 8;                              \
     tb = fr + fg;                                       \
     ts = fr - fg;                                       \
     ti = fr + fb;                                       \
     tb *= tb;                                           \
     ts *= ts;                                           \
     ti *= ti;                                           \
-    r = bc2revmap[(32 * tb - 26 * ts - ti) >> 15];      \
-    g = bc2revmap[(-8 * tb + 14 * ts - ti) >> 15];      \
-    b = bc2revmap[(-14 * tb + 8 * ts + 11 * ti) >> 15]; \
+    r = bc2revmap[(32 * tb - 26 * ts - ti) / 2048];     \
+    g = bc2revmap[(-8 * tb + 14 * ts - ti) / 2048];     \
+    b = bc2revmap[(-14 * tb + 8 * ts + 11 * ti) / 2048];\
 } while(0)
 
-extern uint16_t bc2sqrttab[2048];
+extern uint16_t bc2sqrttab[256 * 256];
 extern uint16_t bc2sqrndtab[256];
 extern int16_t bc2expand[256];
 extern uint8_t *bc2revmap;
