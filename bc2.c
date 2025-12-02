@@ -34,18 +34,22 @@
 
 #include <string.h>
 
+#ifndef CLAMP
+#define CLAMP(x, a, b) ((x) < (a) ? (a) : ((x) > (b) ? (b) : (x)))
+#endif
+
 /* number of input samples in the reverse mapping */
-#define REV_SAMPLES 2560
+#define REV_SAMPLES (2560 * 4)
 
 /* negative/positive padding */
-#define REVMAP_NEGPAD 2048
-#define REVMAP_POSPAD 3584
+#define REVMAP_NEGPAD (1024 * 4)
+#define REVMAP_POSPAD (2048 * 4)
 #define CLIP_NEGPAD 384
 #define CLIP_POSPAD 384
 static uint8_t revmap_store[REVMAP_NEGPAD + REV_SAMPLES + REVMAP_POSPAD];
 static uint8_t clip_store[CLIP_NEGPAD + 256 + CLIP_POSPAD];
 
-uint16_t bc2sqrttab[2048];
+uint16_t bc2sqrttab[256 * 256];
 uint16_t bc2sqrndtab[256];
 int16_t bc2expand[256];
 uint8_t *bc2revmap = revmap_store + REVMAP_NEGPAD;
@@ -78,52 +82,34 @@ iisqrt(uint32_t n)
     return res;
 }
 
-/* 1. square 8 bit number,
- * 2. round it (visually determined),
- * 3. don't scale all the way back down, leave 3 bits of precision
- */
-static uint16_t
-sqrrnd(uint8_t x)
-{
-    /* rounding table */
-    static uint8_t rtab[16] = {
-            31, 95, 127, 127,
-            191, 191, 191, 191,
-            255, 255, 255, 255,
-            255, 255, 255, 255
-    };
-    return (x * x + rtab[x >> 4]) >> 5;
-}
-
 /* precomputes forward/inverse mappings + clipping tables */
 extern void
 bc2_init(void)
 {
     static int init = 0;
-    int i, c;
+    int32_t i, c;
 
     if (init) {
         return;
     }
 
-    for (i = 0; i < 2048; i++) {
-        bc2sqrttab[i] = iisqrt(i * 2048);
+    for (i = 0; i < 256 * 256; i++) {
+        bc2sqrttab[i] = (iisqrt(i * 64) + 1) / 2;
     }
 
     memset(clip_store, 0, CLIP_NEGPAD);
     memset(revmap_store, 0, REVMAP_NEGPAD);
     for (i = 0; i < 256; i++) {
-        bc2sqrndtab[i] = sqrrnd(i);
+        bc2sqrndtab[i] = i * i + iisqrt(i);
         bc2clipbuf[i] = i;
-        bc2expand[i] = 16 * (i - 16) * 255 / 219;
+        bc2expand[i] = (8 * (i - 16) * 255 / 219);
     }
     for (i = 0; i < REV_SAMPLES; i++) {
-        c = iisqrt((i * 32 * 41) / 50);
+        c = iisqrt(i * 802 / 125);
         bc2revmap[i] = CLAMP(c, 0, 255);
     }
     memset(clip_store + CLIP_NEGPAD + 256, 255, CLIP_POSPAD);
     memset(revmap_store + REVMAP_NEGPAD + REV_SAMPLES, 255, REVMAP_POSPAD);
-
     init = 1;
 }
 
