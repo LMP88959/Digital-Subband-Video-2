@@ -37,6 +37,9 @@
 #ifndef CLAMP
 #define CLAMP(x, a, b) ((x) < (a) ? (a) : ((x) > (b) ? (b) : (x)))
 #endif
+#ifndef DIVCEIL
+#define DIVCEIL(x, y) (((x) + (y) - 1) / (y))
+#endif
 
 /* number of input samples in the reverse mapping */
 #define REV_SAMPLES (2560 * 4)
@@ -102,10 +105,10 @@ bc2_init(void)
     for (i = 0; i < 256; i++) {
         bc2sqrndtab[i] = i * i + iisqrt(i);
         bc2clipbuf[i] = i;
-        bc2expand[i] = (8 * (i - 16) * 255 / 219);
+        bc2expand[i] = DIVCEIL(8 * (i - 16) * 255, 219);
     }
     for (i = 0; i < REV_SAMPLES; i++) {
-        c = iisqrt(i * 802 / 125);
+        c = DIVCEIL(iisqrt(i << 17) * 29309, 1 << (16 + 6));
         bc2revmap[i] = CLAMP(c, 0, 255);
     }
     memset(clip_store + CLIP_NEGPAD + 256, 255, CLIP_POSPAD);
