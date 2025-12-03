@@ -61,7 +61,7 @@
  *     R[0...255] G[0...255] B[0...255]
  * =========================================
  *        BC2 as 8-bit per channel:
- *   BR[0...255] CS[48...251] CI[45...235]
+ *   BR[0...255] CS[5...208] CI[45...235]
  *
  *
  *    if "full_range" is set to 0,
@@ -73,7 +73,6 @@
  * =========================================
  */
 
-
 #define SRGB_TO_BC2(r,g,b, br,cs,ci, full_range)        \
 do {                                                    \
     int fr, fg, fb;                                     \
@@ -84,13 +83,13 @@ do {                                                    \
     tb = bc2sqrttab[(81 * fr + 139 * fg + fb) / 240];   \
     ts = bc2sqrttab[(51 * fr + 169 * fg + fb) / 240];   \
     ti = bc2sqrttab[(11 * fr + 9 * fg + fb) / 40];      \
-    fr = (tb + ts + 4) / 8;                             \
-    fg = (tb - ts);                                     \
-    fb = ((ti + 2) / 4) - fr;                           \
+    fr = (tb + ts) / 8;                                 \
+    fg = (ts - tb);                                     \
+    fb = (ti / 4) - fr;                                 \
     if (full_range) {                                   \
         br = bc2clipbuf[fr];                            \
     } else {                                            \
-        br = ((bc2clipbuf[fr] * 219 + 254) / 255) + 16; \
+        br = ((bc2clipbuf[fr] * 219) / 255) + 16;       \
     }                                                   \
     cs = bc2clipbuf[fg + 128];                          \
     ci = bc2clipbuf[fb + 128];                          \
@@ -104,8 +103,8 @@ do {                                                    \
     fr = (full_range) ? ((br) * 8) : bc2expand[br];     \
     fg = ((cs) - 128);                                  \
     fb = ((ci) - 128) * 8;                              \
-    tb = fr + fg;                                       \
-    ts = fr - fg;                                       \
+    tb = fr - fg;                                       \
+    ts = fr + fg;                                       \
     ti = fr + fb;                                       \
     tb *= tb;                                           \
     ts *= ts;                                           \
