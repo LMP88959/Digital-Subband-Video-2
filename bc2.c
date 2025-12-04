@@ -41,21 +41,15 @@
 #define DIVCEIL(x, y) (((x) + (y) - 1) / (y))
 #endif
 
-/* number of input samples in the reverse mapping */
-#define REV_SAMPLES (2560 * 4)
-
 /* negative/positive padding */
-#define REVMAP_NEGPAD (1024 * 4)
-#define REVMAP_POSPAD (4096 * 4)
 #define CLIP_NEGPAD 384
 #define CLIP_POSPAD 384
-static uint8_t revmap_store[REVMAP_NEGPAD + REV_SAMPLES + REVMAP_POSPAD];
 static uint8_t clip_store[CLIP_NEGPAD + 256 + CLIP_POSPAD];
 
 uint16_t bc2sqrttab[256 * 256];
 uint16_t bc2sqrndtab[256];
 int16_t bc2expand[256];
-uint8_t *bc2revmap = revmap_store + REVMAP_NEGPAD;
+uint8_t bc2revmap[BC2_NREV + 1];
 uint8_t *bc2clipbuf = clip_store + CLIP_NEGPAD;
 
 static uint32_t
@@ -101,18 +95,16 @@ bc2_init(void)
     }
 
     memset(clip_store, 0, CLIP_NEGPAD);
-    memset(revmap_store, 0, REVMAP_NEGPAD);
     for (i = 0; i < 256; i++) {
         bc2sqrndtab[i] = i * i + iisqrt(i);
         bc2clipbuf[i] = i;
         bc2expand[i] = DIVCEIL(8 * (i - 16) * 255, 219);
     }
-    for (i = 0; i < REV_SAMPLES; i++) {
+    for (i = 0; i < (BC2_NREV + 1); i++) {
         c = DIVCEIL(iisqrt(i << 17) * 29309, 1 << (16 + 6));
         bc2revmap[i] = CLAMP(c, 0, 255);
     }
     memset(clip_store + CLIP_NEGPAD + 256, 255, CLIP_POSPAD);
-    memset(revmap_store + REVMAP_NEGPAD + REV_SAMPLES, 255, REVMAP_POSPAD);
     init = 1;
 }
 
