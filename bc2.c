@@ -46,7 +46,7 @@
 
 /* negative/positive padding */
 #define REVMAP_NEGPAD (1024 * 4)
-#define REVMAP_POSPAD (2048 * 4)
+#define REVMAP_POSPAD (4096 * 4)
 #define CLIP_NEGPAD 384
 #define CLIP_POSPAD 384
 static uint8_t revmap_store[REVMAP_NEGPAD + REV_SAMPLES + REVMAP_POSPAD];
