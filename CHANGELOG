@@ -1,3 +1,22 @@
+DSV 2.8 - Aug 2026
+    Unfroze and refroze the bitstream to make very much needed changes :)
+    Massive overhaul of the in-loop filtering
+    Improved adaptive Rice coding via improved K parameter calculation
+    Made memory allocations aligned
+    Added color characteristics to metadata including the BC2 color space
+    Removed static variables so users who want to multithread can have an easier time
+    Added metadata validation to the decoder
+    Changed the encoder's quant curve
+    Improved CRF encoding
+    Improved scene change detection
+    Encoder tracks visual energy loss temporally to better allocate bits where needed
+    Refactored and synced up the quantization for each band with the smoothing function in SBT
+    Improved subband transforms
+    Improved still image / intra frame compression
+    Much better, smoother, motion estimation (+ chroma ME added)
+    Encoder does a better job at mode selection during motion estimation
+    Improved quantization
+
 DSV 2.7 - May 16, 2025
     Better and faster motion estimation through better candidate MV selection and reducing diagonal searches
     Better rate control including the addition of CRF encoding (finally)

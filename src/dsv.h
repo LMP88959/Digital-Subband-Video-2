@@ -4,7 +4,7 @@
  *   DSV-2
  *
  *     -
- *    =--  2024-2025 EMMIR
+ *    =--  2024-2026 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -66,10 +66,15 @@ extern "C" {
 #define DSV_ROUND_POW2(x, pwr) (((x) + (1 << (pwr)) - 1) & ((unsigned)(~0) << (pwr)))
 #define DSV_UDIV_ROUND_UP(a,b) (((a) + (b) - 1) / (b))
 #define DSV_UDIV_ROUND(a,b) (((a) + ((b) / 2)) / (b))
+#define DSV_UAVG4(a, b, c, d) ((unsigned) ((a) + (b) + (c) + (d) + 2) >> 2)
+#define DSV_SIGNOF(x) (((x) > 0) - ((x) < 0))
+
+#define DSV_S2U(v) ((unsigned) ((2 * (v)) ^ ((v) < 0 ? ~0 : 0)))
+#define DSV_U2S(v) (((unsigned) (v) >> 1) ^ (-((unsigned) (v) & 1)))
 
 /* portable sar - shift arithmetic right, or floordiv_pow2 */
 #if DSV_PORTABLE
-#define DSV_SAR(v, s) ((v) < 0 ? ~(~(v) >> (s)) : (v) >> (s))
+#define DSV_SAR(v, s) ((-2 >> 1 == -1) ? ((int32_t) (v)) >> (s) : ((int32_t) (v)) / (1 << (s)))
 #else
 #define DSV_SAR(v, s) ((v) >> (s))
 #endif
@@ -109,13 +114,33 @@ typedef struct {
     int aspect_num;
     int aspect_den;
 
-    int inter_sharpen;
+#define DSV_MIN_FILTER_STR -3
+#define DSV_DEF_FILTER_STR  0
+#define DSV_MAX_FILTER_STR  3
+    int filter_strength;
 
     /* 16 bits: reserved for potential future use
      * 1st bit: 0 = no reserved bits, 1 = has reserved bits
-     * last 15 bits: reserved bits
+     * next 15 bits: reserved bits
      */
+#define DSV_META_COLORSPACE_BIT (1 << 0)
+/* rest of bits currently undefined */
     int reserved;
+#define DSV_COLORSPACE_UNDEF      0 /* undefined */
+#define DSV_COLORSPACE_BT601      1
+#define DSV_COLORSPACE_BT709      2
+#define DSV_COLORSPACE_BT2020     3
+#define DSV_COLORSPACE_BT470      4
+#define DSV_COLORSPACE_BC2        5
+#define DSV_COLORSPACE_RESERVED_0 6
+#define DSV_COLORSPACE_RESERVED_1 7
+#define DSV_COLORSPACE_RESERVED_2 8
+#define DSV_COLORSPACE_RESERVED_3 9
+#define DSV_COLORSPACE_RESERVED_4 10
+#define DSV_COLORSPACE_RESERVED_5 11
+
+#define DSV_COLORSPACE_FULLRANGE (1 << 4)
+    int colorspace;
 } DSV_META;
 
 typedef struct {
@@ -147,8 +172,6 @@ typedef struct {
 
     int border;
 } DSV_FRAME;
-
-#define DSV_NDIF_THRESH   (2 * 4)
 
 #define DSV_STABLE_STAT   0
 #define DSV_MAINTAIN_STAT 1
@@ -209,9 +232,10 @@ typedef struct {
 #define DSV_MV_SET_NOXMITC(mv, b)   (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_NOXMITC, b))
 #define DSV_MV_SET_SIMCMPLX(mv, b)  (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_SIMCMPLX, b))
     uint32_t flags;
-    uint16_t err;
 #define DSV_SRC_DC_PRED 0x100
     uint16_t dc;
+    uint16_t aux; /* stores auxiliary data for optimizing in-loop filtering */
+    uint8_t err[3];
     uint8_t submask;
 } DSV_MV;
 
@@ -230,6 +254,7 @@ extern DSV_FRAME *dsv_frame_ref_inc(DSV_FRAME *frame);
 extern void dsv_frame_ref_dec(DSV_FRAME *frame);
 
 extern void dsv_frame_copy(DSV_FRAME *dst, DSV_FRAME *src);
+extern void dsv_ds2x_frame(DSV_FRAME *dst, DSV_FRAME *src);
 extern void dsv_ds2x_frame_luma(DSV_FRAME *dest, DSV_FRAME *src);
 
 extern DSV_FRAME *dsv_clone_frame(DSV_FRAME *f, int border);
@@ -284,7 +309,7 @@ extern int dsv_yuv_read_seq(FILE *in, uint8_t *o, int w, int h, int subsamp);
 #define DSV_MEMORY_STATS 1
 #endif
 
-extern void *dsv_alloc(int size);
+extern void *dsv_alloc(int32_t size);
 extern void dsv_free(void *ptr);
 
 extern void dsv_memory_report(void);
@@ -300,7 +325,7 @@ extern char *dsv_lvlname[DSV_LEVEL_DEBUG + 1];
 #define DSV_LOG_LVL(level, x) \
     do { if (level <= dsv_get_log_level()) { \
       printf("[DSV][%s] ", dsv_lvlname[level]); \
-      printf("%s: %s(%d): ", __FILE__,  __FUNCTION__, __LINE__); \
+      printf("%s(%d): ", __FUNCTION__, __LINE__); \
       printf x; \
       printf("\n"); \
     }} while(0)\

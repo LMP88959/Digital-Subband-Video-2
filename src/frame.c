@@ -4,7 +4,7 @@
  *   DSV-2
  *
  *     -
- *    =--  2024-2025 EMMIR
+ *    =--  2024-2026 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -147,6 +147,7 @@ dsv_load_planar_frame(int format, void *data, int width, int height)
     f->planes[2].stride = f->planes[2].w;
     f->planes[2].len = f->planes[2].stride * f->planes[2].h;
     f->planes[2].data = f->planes[1].data + f->planes[1].len;
+
     return f;
 }
 
@@ -215,20 +216,41 @@ dsv_ds2x_frame_luma(DSV_FRAME *dst, DSV_FRAME *src)
     DSV_PLANE *d = dst->planes + 0;
 
     for (j = 0; j < d->h; j++) {
-        uint8_t *sp, *dp;
-        int bp = 0;
+        uint8_t *s0, *s1, *dp;
 
-        sp = DSV_GET_LINE(s, (j << 1));
+        s0 = DSV_GET_LINE(s, (j << 1));
+        s1 = DSV_GET_LINE(s, 1 + (j << 1));
         dp = DSV_GET_LINE(d, j);
 
         for (i = 0; i < d->w; i++) {
-            int p1, p2, p3, p4;
-            p1 = sp[bp];
-            p2 = sp[bp + 1];
-            p3 = sp[bp + s->stride];
-            p4 = sp[bp + 1 + s->stride];
-            dp[i] = ((p1 + p2 + p3 + p4 + 2) >> 2);
-            bp += 2;
+            dp[i] = DSV_UAVG4(s0[0], s0[1], s1[0], s1[1]);
+            s0 += 2;
+            s1 += 2;
+        }
+    }
+}
+
+extern void
+dsv_ds2x_frame(DSV_FRAME *dst, DSV_FRAME *src)
+{
+    int c, i, j;
+
+    for (c = 0; c < 3; c++) {
+        DSV_PLANE *s = src->planes + c;
+        DSV_PLANE *d = dst->planes + c;
+
+        for (j = 0; j < d->h; j++) {
+            uint8_t *s0, *s1, *dp;
+
+            s0 = DSV_GET_LINE(s, (j << 1));
+            s1 = DSV_GET_LINE(s, 1 + (j << 1));
+            dp = DSV_GET_LINE(d, j);
+
+            for (i = 0; i < d->w; i++) {
+                dp[i] = DSV_UAVG4(s0[0], s0[1], s1[0], s1[1]);
+                s0 += 2;
+                s1 += 2;
+            }
         }
     }
 }
@@ -269,13 +291,7 @@ downsample_strip(DSV_FRAME *frame, int plane, int pos, uint8_t *out)
 
             p = pl->data + 0;
             for (i = 0; i < len; i += SUBDIV) {
-#if SUBDIV == 16
-                out[o++] = (MKVERT(0) + MKVERT(4) + MKVERT(8) + MKVERT(12) + 8) >> 4;
-#elif SUBDIV == 8
-                out[o++] = (MKVERT(0) + MKVERT(4) + 4) >> 3;
-#elif SUBDIV == 4
                 out[o++] = (MKVERT(0) + 2) >> 2;
-#endif
             }
             if (rem) {
                 p = pl->data + len * stride;
@@ -291,13 +307,7 @@ downsample_strip(DSV_FRAME *frame, int plane, int pos, uint8_t *out)
 
             p = pl->data + (pl->w - 1);
             for (i = 0; i < len; i += SUBDIV) {
-#if SUBDIV == 16
-                out[o++] = (MKVERT(0) + MKVERT(4) + MKVERT(8) + MKVERT(12) + 8) >> 4;
-#elif SUBDIV == 8
-                out[o++] = (MKVERT(0) + MKVERT(4) + 4) >> 3;
-#elif SUBDIV == 4
                 out[o++] = (MKVERT(0) + 2) >> 2;
-#endif
             }
             if (rem) {
                 p = pl->data + (pl->w - 1) + len * stride;
@@ -313,13 +323,7 @@ downsample_strip(DSV_FRAME *frame, int plane, int pos, uint8_t *out)
 
             p = pl->data;
             for (i = 0; i < len; i += SUBDIV) {
-#if SUBDIV == 16
-                out[o++] = (MKHORIZ(0) + MKHORIZ(4) + MKHORIZ(8) + MKHORIZ(12) + 8) >> 4;
-#elif SUBDIV == 8
-                out[o++] = (MKHORIZ(0) + MKHORIZ(4) + 4) >> 3;
-#elif SUBDIV == 4
                 out[o++] = (MKHORIZ(0) + 2) >> 2;
-#endif
             }
             if (rem) {
                 p = pl->data + len;
@@ -335,13 +339,7 @@ downsample_strip(DSV_FRAME *frame, int plane, int pos, uint8_t *out)
 
             p = pl->data + (pl->h - 1) * stride;
             for (i = 0; i < len; i += SUBDIV) {
-#if SUBDIV == 16
-                out[o++] = (MKHORIZ(0) + MKHORIZ(4) + MKHORIZ(8) + MKHORIZ(12) + 8) >> 4;
-#elif SUBDIV == 8
-                out[o++] = (MKHORIZ(0) + MKHORIZ(4) + 4) >> 3;
-#elif SUBDIV == 4
                 out[o++] = (MKHORIZ(0) + 2) >> 2;
-#endif
             }
             if (rem) {
                 p = pl->data + len + (pl->h - 1) * stride;

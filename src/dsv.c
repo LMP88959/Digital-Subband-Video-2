@@ -4,7 +4,7 @@
  *   DSV-2
  *
  *     -
- *    =--  2024-2025 EMMIR
+ *    =--  2024-2026 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -45,12 +45,37 @@ static unsigned allocated_bytes = 0;
 static unsigned freed_bytes = 0;
 static unsigned peak_alloc = 0;
 
+#define DSV_ALIGNMENT 64
+
+static void *
+dsv_aligned_calloc(int32_t size)
+{
+    uint8_t *a = NULL;
+    uint8_t *b = calloc(size + (DSV_ALIGNMENT - 1) + sizeof(void**), 1);
+    if (!b) {
+        DSV_ERROR(("failed to allocate memory"));
+        return NULL;
+    }
+    a = b + (DSV_ALIGNMENT - 1) + sizeof(void**);
+    a -= (intptr_t) a & (DSV_ALIGNMENT - 1);
+    memcpy((void*) ((char *) a - sizeof(void*)), &b, sizeof(void*));
+    return a;
+}
+
+static void
+dsv_aligned_free(void *p)
+{
+    void *ptr;
+    memcpy(&ptr, (void*) ((char*) p - sizeof(void*)), sizeof(void*));
+    free(ptr);
+}
+
 extern void *
-dsv_alloc(int size)
+dsv_alloc(int32_t size)
 {
     void *p;
 
-    p = calloc(1, size + 16);
+    p = dsv_aligned_calloc(size + DSV_ALIGNMENT);
     if (!p) {
         return NULL;
     }
@@ -60,20 +85,28 @@ dsv_alloc(int size)
     if (peak_alloc < (allocated_bytes - freed_bytes)) {
         peak_alloc = (allocated_bytes - freed_bytes);
     }
-    return (uint8_t *) p + 16;
+    return (uint8_t *) p + DSV_ALIGNMENT;
 }
 
 extern void
 dsv_free(void *ptr)
 {
     uint8_t *p;
+    int32_t nbytes;
+
+    if (ptr == NULL) {
+        DSV_ERROR(("attempting to free null pointer!"));
+        return;
+    }
     freed++;
-    p = ((uint8_t *) ptr) - 16;
-    freed_bytes += *((int32_t *) p);
+    p = ((uint8_t *) ptr) - DSV_ALIGNMENT;
+    memcpy(&nbytes, p, sizeof(int32_t));
+    freed_bytes += nbytes;
+
     if (peak_alloc < (allocated_bytes - freed_bytes)) {
         peak_alloc = (allocated_bytes - freed_bytes);
     }
-    free(p);
+    dsv_aligned_free(p);
 }
 
 extern void
@@ -88,7 +121,7 @@ dsv_memory_report(void)
 }
 #else
 extern void *
-dsv_alloc(int size)
+dsv_alloc(int32_t size)
 {
     return calloc(1, size);
 }
@@ -182,11 +215,11 @@ dsv_yuv_read(FILE *in, int fno, uint8_t *o, int width, int height, int subsamp)
         int i, j;
         unsigned linebytes = width * 2;
 
+        tline = dsv_alloc(linebytes);
         offset = fno * npix * 2;
         if (fseek(in, offset, SEEK_SET)) {
             return -1;
         }
-        tline = dsv_alloc(linebytes);
         for (j = 0; j < height; j++) {
             uint8_t *tlp = tline;
             if (fread(tline, 1, linebytes, in) != linebytes) {
@@ -449,11 +482,35 @@ dsv_neighbordif(DSV_MV *vecs, DSV_PARAMS *p, int x, int y)
 extern int
 dsv_lb2(unsigned n)
 {
-    unsigned i = 1, log2 = 0;
+    unsigned log2 = 0;
 
-    while (i < n) {
-        i <<= 1;
+    n -= (n != 0);
+    while (n > 0) {
         log2++;
+        n >>= 1;
     }
     return log2;
+}
+
+/* 1 = 256 */
+extern int
+dsv_flb2(unsigned n)
+{
+    uint32_t t, frac, whole = 0;
+    if (n == 0) {
+        return 0;
+    }
+    t = n / 2;
+    while (t > 0) {
+        t >>= 1;
+        whole++;
+    }
+
+    if (whole > 7) {
+        frac = n >> (whole - 7);
+    } else {
+        frac = n << (7 - whole);
+    }
+
+    return (whole << 8) + ((frac & 0x7f) << 1);
 }

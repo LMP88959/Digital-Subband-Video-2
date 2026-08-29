@@ -4,7 +4,7 @@
  *   DSV-2
  *
  *     -
- *    =--  2024-2025 EMMIR
+ *    =--  2024-2026 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -40,7 +40,9 @@ extern "C" {
 typedef struct {
     DSV_PARAMS *params;
     DSV_MV *mvs;
+    DSV_SBC *transform_buf; /* to store subband coefficients temporarily */
     uint8_t *blockdata; /* block bitmasks for adaptive things */
+    uint8_t *sb_facs; /* subblock factors for AQ */
     uint8_t cur_plane;
     uint8_t isP; /* is P frame */
     DSV_FNUM fnum;
@@ -88,10 +90,10 @@ extern int dsv_bs_end_rle(DSV_ZBRLE *rle, int read);
 extern void dsv_bs_put_rle(DSV_ZBRLE *rle, int b);
 extern int dsv_bs_get_rle(DSV_ZBRLE *rle);
 
-extern unsigned dsv_bs_get_rice(DSV_BS *bs, int *rk, int damp);
-extern void dsv_bs_put_rice(DSV_BS *bs, unsigned x, int *rk, int damp);
-extern void dsv_bs_put_nrice(DSV_BS *bs, int v, int *rk, int damp);
-extern int dsv_bs_get_nrice(DSV_BS *bs, int *rk, int damp);
+extern unsigned dsv_bs_get_rice(DSV_BS *bs, unsigned *rk, unsigned *avg);
+extern void dsv_bs_put_rice(DSV_BS *bs, unsigned x, unsigned *rk, unsigned *avg);
+extern void dsv_bs_put_nrice(DSV_BS *bs, int v, unsigned *rk, unsigned *avg);
+extern int dsv_bs_get_nrice(DSV_BS *bs, unsigned *rk, unsigned *avg);
 
 #define DSV_STABLE_BIT   0
 #define DSV_MAINTAIN_BIT 1
@@ -116,29 +118,33 @@ extern void dsv_encode_plane(DSV_BS *bs, DSV_COEFS *src, int q, DSV_FMETA *fm);
 extern int dsv_decode_plane(DSV_BS *bs, DSV_COEFS *dst, int q, DSV_FMETA *fm);
 
 extern int dsv_lb2(unsigned n);
+extern int dsv_flb2(unsigned n);
 
 extern int dsv_mv_cost(DSV_MV *vecs, DSV_PARAMS *p, int i, int j, int mx, int my, int q, int sqr);
 extern void dsv_movec_pred(DSV_MV *vecs, DSV_PARAMS *p, int x, int y, int *px, int *py);
 extern void dsv_neighbordif2(DSV_MV *vecs, DSV_PARAMS *p, int x, int y, int *dx, int *dy);
 extern int dsv_neighbordif(DSV_MV *vecs, DSV_PARAMS *p, int x, int y);
 extern int dsv_spatial_psy_factor(DSV_PARAMS *p, int subband);
-extern DSV_MV *dsv_intra_analysis(DSV_FRAME *src, DSV_PARAMS *params);
+extern int dsv_lfquant(DSV_FMETA *fm, int q);
+extern int dsv_hfquant(DSV_FMETA *fm, int q, int s, int l);
+extern DSV_MV *dsv_intra_analysis(DSV_FRAME *src, DSV_PARAMS *params, uint8_t *sb_facs);
 
 /* D.1 Luma Half-Pixel Filter */
-
-/* half-pixel filters used for motion compensation */
 #define DSV_HPF_A(a,b,c,d) ((19*((b)+(c)))-(3*((a)+(d))))
 #define DSV_HPF_B(a,b,c,d) ((20*((b)+(c)))-(4*((a)+(d))))
 #define DSV_HP_SHF 5                          /* normalization shift */
 #define DSV_HP_ADD (1 << (DSV_HP_SHF - 1))    /* rounding addition */
 
 /* half-pixel filter used for motion estimation */
-#define DSV_HPF_ME(a,b,c,d) ((5*((b)+(c)))-(((a)+(d))))
-#define DSV_ME_HP_SHF 3
+#define DSV_HPF_ME(a,b,c,d) ((19*((b)+(c)))-(3*((a)+(d))))
+#define DSV_ME_HP_SHF 5
 #define DSV_ME_HP_ADD (1 << (DSV_ME_HP_SHF - 1))
 
 /* C.2 fixed point precision for determining what block a pixel lies in */
 #define DSV_BLOCK_INTERP_P      14
+
+#define DSV_MINQP    3
+#define DSV_MINQUANT (1 << DSV_MINQP)  /* C.2 MINQUANT */
 
 extern void dsv_sub_pred(DSV_MV *mv, DSV_PARAMS *p, DSV_FRAME *pred, DSV_FRAME *resd, DSV_FRAME *ref);
 extern void dsv_add_pred(DSV_MV *mv, DSV_FMETA *fm, int q, DSV_FRAME *resd, DSV_FRAME *out, DSV_FRAME *ref, int do_filter);

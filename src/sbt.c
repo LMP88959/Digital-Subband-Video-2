@@ -4,7 +4,7 @@
  *   DSV-2
  *
  *     -
- *    =--  2024-2025 EMMIR
+ *    =--  2024-2026 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -20,31 +20,16 @@
 #define IS_LUMA (fm->cur_plane == 0)
 
 #define LLI_CONDITION  (IS_LUMA  && !IS_P && (l == 4))
-#define LLP_CONDITION  (IS_LUMA  &&  IS_P && (l == 4))
 #define L2A_CONDITION  (IS_LUMA  && !IS_P && (l == 2))
 #define CC_CONDITION   (!IS_LUMA && !IS_P && (l >= 1 && l <= (lvls - 2)))
 #define L1_CONDITION   (IS_LUMA  && !IS_P && (l == 1))
 
 /* overflow safety */
-#define OVF_SAFETY_CONDITION (l >= 6 && l >= (lvls - 3) && !fm->params->lossless)
-
-#define DO_SHREX 1 /* shrink-expand */
-#define SHREX2 3
-#define FWD_SCALE52(x) ((x) * 5 / 2)
-#define INV_SCALE52(x) ((x) * 2 / 5)
-#define FWD_SCALE20(x) ((x) * 2)
-#define INV_SCALE20(x) ((x) / 2)
-#define FWD_SCALE30(x) ((x) * 3)
-#define INV_SCALE30(x) ((x) / 3)
-#define FWD_SCALE40(x) ((x) * 4)
-#define INV_SCALE40(x) ((x) / 4)
-
-#define FWD_SCALENONE(x) (x)
-#define INV_SCALENONE(x) (x)
+#define OVF_SAFETY_CONDITION (l >= 11 && l >= (lvls - 3) && !fm->params->lossless)
 
 /* C.3 Subband Transforms
  *
- * P frames are exclusively Haar except for L4
+ * P frames are exclusively Haar
  * I frames have some non-Haar filters.
  *    - the highest frequency level of the luma plane uses the
  *        Asymmetric Subband Filter.
@@ -57,27 +42,6 @@
  * blurry and sharp and should be preserved and emphasized as much as possible.
  */
 
-static DSV_SBC *temp_buf = NULL;
-static int temp_bufsz = 0;
-
-static void
-alloc_temp(int size)
-{
-    if (temp_bufsz < size) {
-        temp_bufsz = size;
-
-        if (temp_buf) {
-            dsv_free(temp_buf);
-            temp_buf = NULL;
-        }
-
-        temp_buf = dsv_alloc(temp_bufsz * sizeof(DSV_SBC));
-        if (temp_buf == NULL) {
-            DSV_ERROR(("out of memory"));
-        }
-    }
-}
-
 static void
 cpysub(DSV_SBC *dst, DSV_SBC *src, unsigned w, unsigned h, unsigned stride)
 {
@@ -89,30 +53,16 @@ cpysub(DSV_SBC *dst, DSV_SBC *src, unsigned w, unsigned h, unsigned stride)
     }
 }
 
-/* C.3 Rounding Divisions */
+/* C.3 Rounding Division */
 static int
-round2(int v)
+round8(int v)
 {
-    return (v + (v < 0 ? -1 : 1)) / 2;
+    return (v + (v < 0 ? -4 : 4)) / 8;
 }
 
-static int
-round4(int v)
-{
-    return (v + (v < 0 ? -2 : 2)) / 4;
-}
-
-static int
-reflect(int i, int n)
-{
-    if (i < 0) {
-        i = -i;
-    }
-    if (i >= n) {
-        i = n + n - i;
-    }
-    return i;
-}
+/* pos/neg reflect */
+#define RP(i, n, s) (((i) >= (n) ? (2 * (n) - (i) - 2) : (i)) * (s))
+#define RN(i, s) (((i) < 0 ? -(i) : (i)) * (s))
 
 /* filter defines, 'x' means any character
  *
@@ -123,11 +73,6 @@ reflect(int i, int n)
  * xxS = filter normalization shift
  * xxA = filter rounding addition
  */
-
-/* chroma (CC) filter */
-#define CC0 3
-#define CCS 4
-#define CCA (1 << (CCS - 1))
 
 /* a poor filter with heavy ringing actually gives us benefits
  * with regard to perceptual quality for natural images by
@@ -144,47 +89,23 @@ reflect(int i, int n)
 #define S2S 5
 #define S2A (1 << (S2S - 1))
 
-/* reflected get */
-#define rg(x, s) reflect(x, (n - 1)) * s
-
 /* scaling + reordering coefficients from LHLHLHLH to LLLLHHHH */
-#define SCALE_PACK(scaleL, scaleH, s)                 \
-  for (i = 0; i < even_n; i += 2) {                   \
-      out[(i + 0) / 2 * s] = scaleL(in[(i + 0) * s]); \
-      out[(i + h) / 2 * s] = scaleH(in[(i + 1) * s]); \
-  }                                                   \
-  if (n & 1) {                                        \
-      out[(n - 1) / 2 * s] = scaleL(in[(n - 1) * s]); \
+#define SCALE_PACK(in, out, scaleL, scaleH, n, si, so)      \
+  for (i = 0; i < even_n; i += 2) {                         \
+      out[(i +    0) / 2 * so] = in[(i + 0) * si] * scaleL; \
+      out[(i + half) / 2 * so] = in[(i + 1) * si] * scaleH; \
+  }                                                         \
+  if (n & 1) {                                              \
+      out[(n - 1) / 2 * so] = in[(n - 1) * si] * scaleL;    \
   }
 
-#define UNSCALE_UNPACK(scaleL, scaleH, s)             \
-  for (i = 0; i < even_n; i += 2) {                   \
-      out[(i + 0) * s] = scaleL(in[(i + 0) / 2 * s]); \
-      out[(i + 1) * s] = scaleH(in[(i + h) / 2 * s]); \
-  }                                                   \
-  if (n & 1) {                                        \
-      out[(n - 1) * s] = scaleL(in[(n - 1) / 2 * s]); \
-  }
-
-/* same as above but also SHREX's the high freq coef */
-#define SCALE_PACK_SHREX(scaleL, scaleH, s, shrex)    \
-  for (i = 0; i < even_n; i += 2) {                   \
-      DSV_SBC th = scaleH(in[(i + 1) * s]);           \
-      out[(i + 0) / 2 * s] = scaleL(in[(i + 0) * s]); \
-      out[(i + h) / 2 * s] = th - DSV_SAR(th, shrex); \
-  }                                                   \
-  if (n & 1) {                                        \
-      out[(n - 1) / 2 * s] = scaleL(in[(n - 1) * s]); \
-  }
-
-#define UNSCALE_UNPACK_SHREX(scaleL, scaleH, s, shrex)  \
-  for (i = 0; i < even_n; i += 2) {                     \
-      DSV_SBC th = scaleH(in[(i + h) / 2 * s]);         \
-      out[(i + 0) * s] = scaleL(in[(i + 0) / 2 * s]);   \
-      out[(i + 1) * s] = th + DSV_SAR(th, shrex);       \
-  }                                                     \
-  if (n & 1) {                                          \
-      out[(n - 1) * s] = scaleL(in[(n - 1) / 2 * s]);   \
+#define UNSCALE_UNPACK(in, out, scaleL, scaleH, n, si, so)  \
+  for (i = 0; i < even_n; i += 2) {                         \
+      out[(i + 0) * so] = in[(i +    0) / 2 * si] / scaleL; \
+      out[(i + 1) * so] = in[(i + half) / 2 * si] / scaleH; \
+  }                                                         \
+  if (n & 1) {                                              \
+      out[(n - 1) * so] = in[(n - 1) / 2 * si] / scaleL;    \
   }
 
 /* simple 3 tap low/high pass filters */
@@ -202,27 +123,12 @@ reflect(int i, int n)
       v[i * s] op (v[(i - 1) * s] + v[(i + 1) * s] + 2) >> 2;  \
   }
 
-#define DO_SIMPLE_INV(v, s) \
-  v[0] -= v[s] >> 1; \
-  for (i = 2; i < even_n; i += 2) { \
-      v[i * s] -= (v[(i - 1) * s] + v[(i + 1) * s] + 2) >> 2; \
-      v[(i - 1) * s] += (v[(i - 2) * s] + v[i * s] + 1) >> 1; \
-  } \
-  if (!(n & 1)) { \
-      v[(n - 1) * s] += v[(n - 2) * s]; \
-  }
 
 /* 5 tap low/high pass filters with/without adaptive ringing */
 #define MAKE_5_TAP(v, C0, CA, CS, op, s)            \
-  v[i * s] op (-v[rg(i - 3, s)] +                   \
+  v[i * s] op (-v[RN(i - 3, s)] +                   \
           C0 * (v[(i - 1) * s] + v[(i + 1) * s]) -  \
-                v[rg(i + 3, s)] + CA) >> CS
-
-#define DO_5_TAP_LO(v, C0, CA, CS, op, s) \
-  v[0] op v[s] >> 1;                      \
-  for (i = 2; i < even_n; i += 2) {       \
-      MAKE_5_TAP(v, C0, CA, CS, op, s);   \
-  }
+                v[RP(i + 3, n, s)] + CA) >> CS
 
 #define DO_5_TAP_LO_A(v, C0, CA, CS, R0, RA, RS, op, s)             \
   delta *= 2;                                                       \
@@ -240,148 +146,78 @@ reflect(int i, int n)
 /* Filter coefficients for this encoder's ASF analysis implementation.
  * These coefficients and forward filtering methods can be unique to each
  * encoder since the decoder simply does a 3-tap synthesis. */
-#define LPFA 46
-#define LPFB 19
-#define LPFC 8
-#define LPFD 3
-#define LPFE 1
+#define LPFA 98
+#define LPFB 37
+#define LPFC 17
+#define LPFD 5
 
-#define HPFA 32
-#define HPFB 16
+#define LPFAR 98
+#define LPFBR 38
+#define LPFCR 21
+#define LPFDR 6
+#define LPFER 4
 
-#define LPFAR 46
-#define LPFBR 20
-#define LPFCR 9
-#define LPFDR 4
-#define LPFER 2
+#define HPFA 64
+#define HPFB 32
 
-#define ASFNORM 6
+#define ASFNORM 7
 
-#define ASF93_LO(i, vs, s) \
-                  (LPFA *  vs[rg(i + 0, s)] \
-                 + LPFB * (vs[rg(i - 1, s)] + vs[rg(i + 1, s)]) \
-                 - LPFC * (vs[rg(i - 2, s)] + vs[rg(i + 2, s)])\
-                 - LPFD * (vs[rg(i - 3, s)] + vs[rg(i + 3, s)])\
-                 + LPFE * (vs[rg(i - 4, s)] + vs[rg(i + 4, s)]))
+#define ASF7R9H3_LO(i, vs, s) \
+                  (LPFA *  vs[RN(i + 0, s)] \
+                 + LPFB * (vs[RN(i - 1, s)] + vs[RP(i + 1, n, s)]) \
+                 - LPFC * (vs[RN(i - 2, s)] + vs[RP(i + 2, n, s)]) \
+                 - LPFD * (vs[RN(i - 3, s)] + vs[RP(i + 3, n, s)]))
 
-#define ASF93_LO_R(i, vs, s) \
-                  (LPFAR *  vs[rg(i + 0, s)] \
-                 + LPFBR * (vs[rg(i - 1, s)] + vs[rg(i + 1, s)]) \
-                 - LPFCR * (vs[rg(i - 2, s)] + vs[rg(i + 2, s)])\
-                 - LPFDR * (vs[rg(i - 3, s)] + vs[rg(i + 3, s)])\
-                 + LPFER * (vs[rg(i - 4, s)] + vs[rg(i + 4, s)]))
+#define ASF7R9H3_LO_R(i, vs, s) \
+                  (LPFAR *  vs[RN(i + 0, s)] \
+                 + LPFBR * (vs[RN(i - 1, s)] + vs[RP(i + 1, n, s)]) \
+                 - LPFCR * (vs[RN(i - 2, s)] + vs[RP(i + 2, n, s)]) \
+                 - LPFDR * (vs[RN(i - 3, s)] + vs[RP(i + 3, n, s)]) \
+                 + LPFER * (vs[RN(i - 4, s)] + vs[RP(i + 4, n, s)]))
 
-#define ASF93_HI(i, vs, s)\
-                  (HPFA *  vs[rg(i + 0, s)] \
-                 - HPFB * (vs[rg(i - 1, s)] + vs[rg(i + 1, s)]))
+#define ASF7R9H3_HI(i, vs, s) \
+                  (HPFA *  vs[RN(i + 0, s)] \
+                 - HPFB * (vs[RN(i - 1, s)] + vs[RP(i + 1, n, s)]))
 
 static void
-filterLLI(DSV_SBC *out, DSV_SBC *in, int n, int s)
+dwt_forward(DSV_SBC *io, int n)
 {
-    int i, even_n = n & ~1, h = n + (n & 1);
-    DO_SIMPLE_HI(in, -=, s);
-    DO_SIMPLE_LO(in, +=, s);
-    SCALE_PACK(FWD_SCALE52, FWD_SCALE40, s);
+    int i, even_n = n & ~1;
+    DO_SIMPLE_HI(io, -=, 1);
+    DO_SIMPLE_LO(io, +=, 1);
 }
 
 static void
-ifilterLLI(DSV_SBC *out, DSV_SBC *in, int n, int s)
+dwt_inverse(DSV_SBC *io, int n)
 {
-    int i, even_n = n & ~1, h = n + (n & 1);
-    UNSCALE_UNPACK(INV_SCALE52, INV_SCALE40, s);
-    /* Combined these for speed:
-       DO_SIMPLE_LO(out, -=, s);
-       DO_SIMPLE_HI(out, +=, s);
-    */
-    out[0] -= out[s] >> 1;
-    for (i = 2; i < even_n; i += 2) {
-        out[i * s] -= (out[(i - 1) * s] + out[(i + 1) * s] + 2) >> 2;
-        out[(i - 1) * s] += (out[(i - 2) * s] + out[i * s] + 1) >> 1;
-    }
-    if (n & 1) {
-        /* intentional use of 'i' after the for-loop */
-        out[(i - 1) * s] += (out[(i - 2) * s] + out[i * s] + 1) >> 1;
-    } else {
-        out[(n - 1) * s] += out[(n - 2) * s];
-    }
-}
-
-static void
-filterLLP(DSV_SBC *out, DSV_SBC *in, int n, int s)
-{
-    int i, even_n = n & ~1, h = n + (n & 1);
-    DO_SIMPLE_HI(in, -=, s);
-    DO_SIMPLE_LO(in, +=, s);
-    SCALE_PACK(FWD_SCALE52, FWD_SCALE20, s);
-}
-
-static void
-ifilterLLP(DSV_SBC *out, DSV_SBC *in, int n, int s)
-{
-    int i, even_n = n & ~1, h = n + (n & 1);
-    UNSCALE_UNPACK(INV_SCALE52, INV_SCALE20, s);
-    /* Combined these for speed:
-       DO_SIMPLE_LO(out, -=, s);
-       DO_SIMPLE_HI(out, +=, s);
-    */
-    out[0] -= out[s] >> 1;
-    for (i = 2; i < even_n; i += 2) {
-        out[i * s] -= (out[(i - 1) * s] + out[(i + 1) * s] + 2) >> 2;
-        out[(i - 1) * s] += (out[(i - 2) * s] + out[i * s] + 1) >> 1;
-    }
-    if (n & 1) {
-        /* intentional use of 'i' after the for-loop */
-        out[(i - 1) * s] += (out[(i - 2) * s] + out[i * s] + 1) >> 1;
-    } else {
-        out[(n - 1) * s] += out[(n - 2) * s];
-    }
-}
-
-static void
-filterCC(DSV_SBC *out, DSV_SBC *in, int n, int s)
-{
-    int i, even_n = n & ~1, h = n + (n & 1);
-    DO_SIMPLE_HI(in, -=, s);
-    DO_5_TAP_LO(in, CC0, CCA, CCS, +=, s);
-    SCALE_PACK(FWD_SCALE20, FWD_SCALENONE, s);
-}
-
-static void
-ifilterCC(DSV_SBC *out, DSV_SBC *in, int n, int s)
-{
-    int i, even_n = n & ~1, h = n + (n & 1);
-    UNSCALE_UNPACK(INV_SCALE20, INV_SCALENONE, s);
-    DO_5_TAP_LO(out, CC0, CCA, CCS, -=, s);
-    DO_SIMPLE_HI(out, +=, s);
+    int i, even_n = n & ~1;
+    DO_SIMPLE_LO(io, -=, 1);
+    DO_SIMPLE_HI(io, +=, 1);
 }
 
 static void
 filterL2_a(DSV_SBC *out, DSV_SBC *in, int n, int s, uint8_t *sb, int delta, int sbs)
 {
-    int i, sbp = 0, even_n = n & ~1, h = n + (n & 1);
+    int i, sbp = 0, even_n = n & ~1, half = n + (n & 1);
     DO_SIMPLE_HI(in, -=, s);
     DO_5_TAP_LO_A(in, S20, S2A, S2S, R20, R2A, R2S, +=, s);
-#if DO_SHREX
-    SCALE_PACK_SHREX(FWD_SCALE20, FWD_SCALE30, s, SHREX2);
-#else
-    SCALE_PACK(FWD_SCALE20, FWD_SCALE30, s);
-#endif
+    SCALE_PACK(in, out, 2, 2, n, s, s);
 }
 
 static void
 ifilterL2_a(DSV_SBC *out, DSV_SBC *in, int n, int s, uint8_t *sb, int delta, int sbs)
 {
-    int i, sbp = 0, even_n = n & ~1, h = n + (n & 1);
-#if DO_SHREX
-    UNSCALE_UNPACK_SHREX(INV_SCALE20, INV_SCALE30, s, SHREX2);
-#else
-    UNSCALE_UNPACK(INV_SCALE20, INV_SCALE30, s);
-#endif
+    int i, sbp = 0, even_n = n & ~1, half = n + (n & 1);
+    UNSCALE_UNPACK(in, out, 2, 2, n, s, s);
     DO_5_TAP_LO_A(out, S20, S2A, S2S, R20, R2A, R2S, -=, s);
     DO_SIMPLE_HI(out, +=, s);
 }
 
-/* ASF93 asymmetric subband filter.
+/* ASF7R9H3 asymmetric subband filter.
+ * ASF7R9H3
+ *   7 is the number of standard lowpass filter taps
+ *   9 is the number of ringing mode lowpass filter taps
+ *   3 is the number of standard highpass filter taps
  *
  * 'n' is guaranteed to be even here because this is the highest freq subband
  * (full frame size) and is only applied to the luma plane (which the spec
@@ -394,11 +230,12 @@ filterL1(DSV_SBC *out, DSV_SBC *in, int n, int s, uint8_t *sb, int delta, int sb
     for (i = 1; i < n - 2; i += 2) {
         int bv = sb[(sbp >> DSV_BLOCK_INTERP_P) * sbs];
         if (bv & DSV_IS_RINGING) {
-            L = ASF93_LO_R((i - 1), in, s);
+            L = ASF7R9H3_LO_R((i - 1), in, s);
         } else {
-            L = ASF93_LO((i - 1), in, s);
+            L = ASF7R9H3_LO((i - 1), in, s);
         }
-        H = ASF93_HI((i - 0), in, s);
+        H = ASF7R9H3_HI((i - 0), in, s);
+
         out[(i + 0) / 2 * s] = (L + (1 << (ASFNORM - 2))) >> (ASFNORM - 1);
         out[(i + n) / 2 * s] = (H + (1 << (ASFNORM - 4))) >> (ASFNORM - 3);
         sbp += delta;
@@ -413,64 +250,60 @@ filterL1(DSV_SBC *out, DSV_SBC *in, int n, int s, uint8_t *sb, int delta, int sb
     in[2 * s] += (in[1 * s] + in[3 * s] + 2) >> 2;
     in[(n - 2) * s] += (in[(n - 3) * s] + in[(n - 1) * s] + 2) >> 2;
 
-    out[0 / 2 * s] = FWD_SCALE20(in[0 * s]);
-    out[n / 2 * s] = FWD_SCALE40(in[1 * s]);
+    out[0 / 2 * s] = in[0 * s] * 2;
+    out[n / 2 * s] = in[1 * s] * 4;
 
-    out[((n - 2) + 0) / 2 * s] = FWD_SCALE20(in[((n - 2) + 0) * s]);
-    out[((n - 2) + n) / 2 * s] = FWD_SCALE40(in[((n - 2) + 1) * s]);
+    out[((n - 2) + 0) / 2 * s] = in[((n - 2) + 0) * s] * 2;
+    out[((n - 2) + n) / 2 * s] = in[((n - 2) + 1) * s] * 4;
 }
 
-static void
-ifilterL1(DSV_SBC *out, DSV_SBC *in, int n, int s)
-{
-    int i, even_n = n & ~1, h = n + (n & 1);
-    UNSCALE_UNPACK(INV_SCALE20, INV_SCALE40, s);
-    DO_SIMPLE_INV(out, s);
-}
-
-static void
-filterLOSSLESS(DSV_SBC *out, DSV_SBC *in, int n, int s)
-{
-    int i, even_n = n & ~1, h = n + (n & 1);
-    DO_SIMPLE_HI(in, -=, s);
-    DO_SIMPLE_LO(in, +=, s);
-    SCALE_PACK(FWD_SCALENONE, FWD_SCALENONE, s);
-}
-
-static void
-ifilterLOSSLESS(DSV_SBC *out, DSV_SBC *in, int n, int s)
-{
-    int i, even_n = n & ~1, h = n + (n & 1);
-    UNSCALE_UNPACK(INV_SCALENONE, INV_SCALENONE, s);
-    DO_SIMPLE_LO(out, -=, s);
-    DO_SIMPLE_HI(out, +=, s);
-}
-
-#define fwd_2d(tmp, in, fw, fh, lvl, filter) \
+/* for performance reasons, vertical/column transforms first copy the column into
+ * a linear buffer, transform the linear buffer, and then copy back to the column
+ */
+#define fwd_2d(tmpbuf, img, width, height, stride, filter, scaleL, scaleH) \
 { \
-    int i, j, sw, sh; \
-    sw = DSV_ROUND_SHIFT(fw, lvl - 1); \
-    sh = DSV_ROUND_SHIFT(fh, lvl - 1); \
-    for (j = 0; j < sh; j++) { \
-        filter(tmp + fw * j, in + fw * j, sw, 1); \
+    int i, x, y; \
+    DSV_SBC *tmp = tmpbuf; \
+    for (y = 0; y < height; y++) { \
+        DSV_SBC *row = img + y * stride; \
+        int even_n = width & ~1, half = width + (width & 1); \
+        memcpy(tmp, row, width * sizeof(*tmp)); \
+        filter(tmp, width); \
+        SCALE_PACK(tmp, row, scaleL, scaleH, width, 1, 1); \
     } \
-    for (i = 0; i < sw; i++) { \
-        filter(in + i, tmp + i, sh, fw); \
+    for (x = 0; x < width; x++) { \
+        DSV_SBC *col = img + x; \
+        int even_n = height & ~1, half = height + (height & 1); \
+        for (y = 0; y < height; y++) { \
+            tmp[y] = img[y * stride + x]; \
+        } \
+        filter(tmp, height); \
+        SCALE_PACK(tmp, col, scaleL, scaleH, height, 1, stride); \
     } \
 }
 
-#define inv_2d(tmp, in, fw, fh, lvl, ifilter) \
+#define inv_2d(tmpbuf, img, width, height, stride, ifilter, scaleL, scaleH) \
 { \
-    int i, j, sw, sh; \
-    sw = DSV_ROUND_SHIFT(fw, lvl - 1); \
-    sh = DSV_ROUND_SHIFT(fh, lvl - 1); \
-    for (i = 0; i < sw; i++) { \
-        ifilter(tmp + i, in + i, sh, fw); \
+    int i, x, y; \
+    DSV_SBC *tmp = tmpbuf; \
+    for (x = 0; x < width; x++) { \
+        DSV_SBC *col = img + x; \
+        int even_n = height & ~1, half = height + (height & 1); \
+        UNSCALE_UNPACK(col, tmp, scaleL, scaleH, height, stride, 1); \
+        ifilter(tmp, height); \
+        for (y = 0; y < height; y++) { \
+            img[y * stride + x] = tmp[y]; \
+        } \
     } \
-    for (j = 0; j < sh; j++) { \
-        ifilter(in + fw * j, tmp + fw * j, sw, 1); \
+    for (y = 0; y < height; y++) { \
+        int even_n = width & ~1, half = width + (width & 1); \
+        DSV_SBC *row = img + y * stride; \
+        UNSCALE_UNPACK(row, tmp, scaleL, scaleH, width, 1, 1); \
+        ifilter(tmp, width); \
+        memcpy(row, tmp, width * sizeof(*tmp)); \
     } \
 }
+
 static void
 fwd_L1a_2d(DSV_SBC *tmp, DSV_SBC *in, int sW, int sH, int lvl, DSV_FMETA *fm)
 {
@@ -547,46 +380,55 @@ static void
 fwd(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int ovf_safety)
 {
     DSV_SBC *os, *od, *dpLL, *dpLH, *dpHL, *dpHH;
-    int x0, x1, x2, x3;
-    int x, y, woff, hoff, ws, hs, oddw, oddh;
-    int idx;
+    int x, y, woff, hoff, ws, hs, oddw, oddh, idx;
 
     woff = DSV_ROUND_SHIFT(width, lvl);
     hoff = DSV_ROUND_SHIFT(height, lvl);
 
     ws = DSV_ROUND_SHIFT(width, lvl - 1);
     hs = DSV_ROUND_SHIFT(height, lvl - 1);
-    oddw = (ws & 1);
-    oddh = (hs & 1);
+    oddw = ws & 1;
+    oddh = hs & 1;
     os = src;
     od = dst;
 
     dpLL = dst;
     dpLH = dst + woff;
     dpHL = dst + hoff * width;
-    dpHH = dst + woff + (hoff) * width;
+    dpHH = dst + woff + hoff * width;
     for (y = 0; y < hs - oddh; y += 2) {
         DSV_SBC *spA, *spB;
 
-        spA = src + (y + 0) * width;
-        spB = src + (y + 1) * width;
+        spA = src + y * width;
+        spB = spA + width;
         for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
+            int x0, x1, x2, x3, s0, s1, d0, d1;
+
             x0 = spA[x + 0];
             x1 = spA[x + 1];
             x2 = spB[x + 0];
             x3 = spB[x + 1];
 
-            dpLL[idx] = (x0 + x1 + x2 + x3) / (ovf_safety ? 2 : 1); /* LL */
-            dpLH[idx] = (x0 - x1 + x2 - x3); /* LH */
-            dpHL[idx] = (x0 + x1 - x2 - x3); /* HL */
-            dpHH[idx] = (x0 - x1 - x2 + x3); /* HH */
+            s0 = x0 + x1;
+            s1 = x2 + x3;
+            d0 = x0 - x1;
+            d1 = x2 - x3;
+
+            dpLL[idx] = DSV_SAR(s0 + s1, ovf_safety); /* LL */
+            dpLH[idx] = d0 + d1; /* LH */
+            dpHL[idx] = s0 - s1; /* HL */
+            dpHH[idx] = d0 - d1; /* HH */
         }
         if (oddw) {
-            x0 = spA[x + 0];
-            x2 = spB[x + 0];
+            int x0, x2, s, d;
 
-            dpLL[idx] = 2 * (x0 + x2) / (ovf_safety ? 2 : 1); /* LL */
-            dpHL[idx] = 2 * (x0 - x2); /* HL */
+            x0 = spA[ws - 1];
+            x2 = spB[ws - 1];
+            s = x0 + x2;
+            d = x0 - x2;
+
+            dpLL[idx] = DSV_SAR(s * 2, ovf_safety); /* LL */
+            dpHL[idx] = d * 2; /* HL */
         }
         dpLL += width;
         dpLH += width;
@@ -594,112 +436,57 @@ fwd(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int ovf_safety)
         dpHH += width;
     }
     if (oddh) {
-        DSV_SBC *spA = src + (y + 0) * width;
+        DSV_SBC *spA = src + (hs - 1) * width;
         for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
+            int x0, x1, s, d;
+
             x0 = spA[x + 0];
             x1 = spA[x + 1];
+            s = x0 + x1;
+            d = x0 - x1;
 
-            dpLL[idx] = 2 * (x0 + x1) / (ovf_safety ? 2 : 1); /* LL */
-            dpLH[idx] = 2 * (x0 - x1); /* LH */
+            dpLL[idx] = DSV_SAR(s * 2, ovf_safety); /* LL */
+            dpLH[idx] = d * 2; /* LH */
         }
         if (oddw) {
-            x0 = spA[x + 0];
-
-            dpLL[idx] = (x0 * 4) / (ovf_safety ? 2 : 1); /* LL */
+            int x0 = spA[ws - 1];
+            dpLL[idx] = DSV_SAR(x0 * 4, ovf_safety); /* LL */
         }
     }
     cpysub(os, od, ws, hs, width);
 }
 
-/* C.3.1.1 Haar Simple Inverse Transform */
-static void
-inv_simple(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int ovf_safety)
+static int
+is_monotonic(int a, int b, int c, int hqp)
 {
-    int x, y, woff, hoff, ws, hs, oddw, oddh;
-    int LL, LH, HL, HH;
-    int idx;
-    DSV_SBC *os, *od, *spLL, *spLH, *spHL, *spHH;
-
-    os = src;
-    od = dst;
-
-    woff = DSV_ROUND_SHIFT(width, lvl);
-    hoff = DSV_ROUND_SHIFT(height, lvl);
-
-    ws = DSV_ROUND_SHIFT(width, lvl - 1);
-    hs = DSV_ROUND_SHIFT(height, lvl - 1);
-    oddw = (ws & 1);
-    oddh = (hs & 1);
-
-    spLL = src;
-    spLH = src + woff;
-    spHL = src + hoff * width;
-    spHH = src + woff + hoff * width;
-    for (y = 0; y < hs - oddh; y += 2) {
-        DSV_SBC *dpA, *dpB;
-
-        dpA = dst + (y + 0) * width;
-        dpB = dst + (y + 1) * width;
-        for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
-            LL = spLL[idx] * (1 << ovf_safety);
-            LH = spLH[idx];
-            HL = spHL[idx];
-            HH = spHH[idx];
-
-            dpA[x + 0] = (LL + LH + HL + HH) / 4; /* LL */
-            dpA[x + 1] = (LL - LH + HL - HH) / 4; /* LH */
-            dpB[x + 0] = (LL + LH - HL - HH) / 4; /* HL */
-            dpB[x + 1] = (LL - LH - HL + HH) / 4; /* HH */
-        }
-        if (oddw) {
-            LL = spLL[idx] * (1 << ovf_safety);
-            HL = spHL[idx];
-
-            dpA[x + 0] = (LL + HL) / 4; /* LL */
-            dpB[x + 0] = (LL - HL) / 4; /* HL */
-        }
-        spLL += width;
-        spLH += width;
-        spHL += width;
-        spHH += width;
-    }
-    if (oddh) {
-        DSV_SBC *dpA = dst + (y + 0) * width;
-        for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
-            LL = spLL[idx] * (1 << ovf_safety);
-            LH = spLH[idx];
-
-            dpA[x + 0] = (LL + LH) / 4; /* LL */
-            dpA[x + 1] = (LL - LH) / 4; /* LH */
-        }
-        if (oddw) {
-            LL = spLL[idx] * (1 << ovf_safety);
-
-            dpA[x + 0] = (LL / 4); /* LL */
-        }
-    }
-    cpysub(os, od, ws, hs, width);
+    int da, dc;
+    da = b - a;
+    dc = c - b;
+    return da != 0 && dc != 0 && /* ensure gradient exists (not partially or totally flat) */
+           (DSV_SIGNOF(da) == DSV_SIGNOF(dc)) && /* ensure gradient is monotonous */
+           abs(da) < hqp && abs(dc) < hqp; /* ensure start and end values in gradient are not wildly different (for better edge preservation) */
 }
 
 /* C.3.1.2 Haar Filtered Inverse Transform */
 static void
-inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqp, int ovf_safety)
+inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqpLH, int hqpHL, int ovf_safety)
 {
     int x, y, woff, hoff, ws, hs, oddw, oddh;
     int LL, LH, HL, HH;
-    int idx;
+    int idx, mhqpLH, mhqpHL;
+
     DSV_SBC *os, *od, *spLL, *spLH, *spHL, *spHH;
-
-    os = src;
-    od = dst;
-
+    mhqpLH = 8 * hqpLH;
+    mhqpHL = 8 * hqpHL;
     woff = DSV_ROUND_SHIFT(width, lvl);
     hoff = DSV_ROUND_SHIFT(height, lvl);
 
     ws = DSV_ROUND_SHIFT(width, lvl - 1);
     hs = DSV_ROUND_SHIFT(height, lvl - 1);
-    oddw = (ws & 1);
-    oddh = (hs & 1);
+    oddw = ws & 1;
+    oddh = hs & 1;
+    os = src;
+    od = dst;
 
     spLL = src;
     spLH = src + woff;
@@ -707,13 +494,14 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqp, int ovf
     spHH = src + woff + hoff * width;
     for (y = 0; y < hs - oddh; y += 2) {
         DSV_SBC *dpA, *dpB;
-        int inY = y > 0 && y < (hs - oddh - 1);
+        int inY = hqpHL && (y > 0 && y < (hs - oddh - 1));
 
-        dpA = dst + (y + 0) * width;
-        dpB = dst + (y + 1) * width;
+        dpA = dst + y * width;
+        dpB = dpA + width;
         for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
-            int inX = x > 0 && x < (ws - oddw - 1);
-            int nudge, t, lp, ln, mn, mx;
+            int nudge, lp, ln;
+            int s0, s1, d0, d1;
+            int inX = hqpLH && (x > 0 && x < (ws - oddw - 1));
 
             LL = spLL[idx] * (1 << ovf_safety);
             LH = spLH[idx];
@@ -723,53 +511,37 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqp, int ovf
             if (inX) {
                 lp = spLL[idx - 1] * (1 << ovf_safety); /* prev */
                 ln = spLL[idx + 1] * (1 << ovf_safety); /* next */
-                mx = LL - ln; /* find difference between LL values */
-                mn = lp - LL;
-                if (mn > mx) {
-                    t = mn;
-                    mn = mx;
-                    mx = t;
-                }
-                mx = MIN(mx, 0); /* must be negative or zero */
-                mn = MAX(mn, 0); /* must be positive or zero */
-                /* if they are not zero, then there is a potential
-                 * consistent smooth gradient between them */
-                if (mx != mn) {
-                    t = round4(lp - ln);
-                    nudge = round2(CLAMP(t, mx, mn) - (LH * 2));
-                    LH += CLAMP(nudge, -hqp, hqp); /* nudge LH to smooth it */
+                if (is_monotonic(lp, LL, ln, mhqpLH)) {
+                    nudge = round8(lp - ln) - LH;
+                    LH += CLAMP(nudge, -hqpLH, hqpLH); /* nudge LH to smooth it */
                 }
             }
             if (inY) { /* do the same as above but in the Y direction */
                 lp = spLL[idx - width] * (1 << ovf_safety);
                 ln = spLL[idx + width] * (1 << ovf_safety);
-                mx = LL - ln;
-                mn = lp - LL;
-                if (mn > mx) {
-                    t = mn;
-                    mn = mx;
-                    mx = t;
-                }
-                mx = MIN(mx, 0);
-                mn = MAX(mn, 0);
-                if (mx != mn) {
-                    t = round4(lp - ln);
-                    nudge = round2(CLAMP(t, mx, mn) - (HL * 2));
-                    HL += CLAMP(nudge, -hqp, hqp); /* nudge HL to smooth it */
+                if (is_monotonic(lp, LL, ln, mhqpHL)) {
+                    nudge = round8(lp - ln) - HL;
+                    HL += CLAMP(nudge, -hqpHL, hqpHL); /* nudge HL to smooth it */
                 }
             }
 
-            dpA[x + 0] = (LL + LH + HL + HH) / 4; /* LL */
-            dpA[x + 1] = (LL - LH + HL - HH) / 4; /* LH */
-            dpB[x + 0] = (LL + LH - HL - HH) / 4; /* HL */
-            dpB[x + 1] = (LL - LH - HL + HH) / 4; /* HH */
+            s0 = LL + HL;
+            s1 = LL - HL;
+            d0 = LH + HH;
+            d1 = LH - HH;
+
+            dpA[x + 0] = (s0 + d0) / 4;
+            dpA[x + 1] = (s0 - d0) / 4;
+            dpB[x + 0] = (s1 + d1) / 4;
+            dpB[x + 1] = (s1 - d1) / 4;
         }
+
         if (oddw) {
             LL = spLL[idx] * (1 << ovf_safety);
             HL = spHL[idx];
 
-            dpA[x + 0] = (LL + HL) / 4; /* LL */
-            dpB[x + 0] = (LL - HL) / 4; /* HL */
+            dpA[ws - 1] = (LL + HL) / 4;
+            dpB[ws - 1] = (LL - HL) / 4;
         }
         spLL += width;
         spLH += width;
@@ -777,18 +549,17 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqp, int ovf
         spHH += width;
     }
     if (oddh) {
-        DSV_SBC *dpA = dst + (y + 0) * width;
+        DSV_SBC *dpA = dst + (hs - 1) * width;
         for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
             LL = spLL[idx] * (1 << ovf_safety);
             LH = spLH[idx];
 
-            dpA[x + 0] = (LL + LH) / 4; /* LL */
-            dpA[x + 1] = (LL - LH) / 4; /* LH */
+            dpA[x + 0] = (LL + LH) / 4;
+            dpA[x + 1] = (LL - LH) / 4;
         }
         if (oddw) {
             LL = spLL[idx] * (1 << ovf_safety);
-
-            dpA[x + 0] = LL / 4; /* LL */
+            dpA[ws - 1] = LL / 4;
         }
     }
     cpysub(os, od, ws, hs, width);
@@ -802,7 +573,7 @@ p2sbc(DSV_COEFS *dc, DSV_PLANE *p)
     DSV_SBC *d;
 
     d = dc->data;
-    for (y = 0; y < p->h; y++) {
+    for (y = 0; y < dc->height; y++) {
         uint8_t *line = DSV_GET_LINE(p, y);
         for (x = 0; x < dc->width; x++) {
             /* subtract 128 to center plane around zero */
@@ -836,7 +607,7 @@ nlevels(int w, int h)
 {
     int lb2, mx;
 
-    mx = (w > h) ? w : h;
+    mx = MAX(w, h);
     lb2 = dsv_lb2(mx);
     if (mx > (1 << lb2)) {
         lb2++;
@@ -848,7 +619,7 @@ extern void
 dsv_fwd_sbt(DSV_PLANE *src, DSV_COEFS *dst, DSV_FMETA *fm)
 {
     int w, h, lvls, l, ovf_safety;
-    DSV_SBC *temp_buf_pad;
+    DSV_SBC *temp_buf_pad, *temp_buf_line;
 
     w = dst->width;
     h = dst->height;
@@ -856,25 +627,27 @@ dsv_fwd_sbt(DSV_PLANE *src, DSV_COEFS *dst, DSV_FMETA *fm)
     p2sbc(dst, src);
 
     lvls = nlevels(w, h);
-    alloc_temp((w + 2) * (h + 2));
-    temp_buf_pad = temp_buf + w;
+    temp_buf_pad = fm->transform_buf + w;
+    temp_buf_line = fm->transform_buf + ((w + 2) * (h + 2));
 
     for (l = 1; l <= lvls; l++) {
+        int sw, sh;
+        sw = DSV_ROUND_SHIFT(w, l - 1);
+        sh = DSV_ROUND_SHIFT(h, l - 1);
+
         ovf_safety = OVF_SAFETY_CONDITION;
         if (fm->params->lossless) {
-            if ((l >= 1 && l <= (lvls - 2))) {
-                fwd_2d(temp_buf_pad, dst->data, w, h, l, filterLOSSLESS);
+            if (l >= 1 && l <= (lvls - 2)) {
+                fwd_2d(temp_buf_line, dst->data, sw, sh, w, dwt_forward, 1, 1);
             } else {
                 fwd(dst->data, temp_buf_pad, w, h, l, ovf_safety);
             }
             continue;
         }
         if (LLI_CONDITION) {
-            fwd_2d(temp_buf_pad, dst->data, w, h, l, filterLLI);
-        } else if (LLP_CONDITION) {
-            fwd_2d(temp_buf_pad, dst->data, w, h, l, filterLLP);
+            fwd_2d(temp_buf_line, dst->data, sw, sh, w, dwt_forward, 2, 2);
         } else if (CC_CONDITION) {
-            fwd_2d(temp_buf_pad, dst->data, w, h, l, filterCC);
+            fwd_2d(temp_buf_line, dst->data, sw, sh, w, dwt_forward, 2, 1);
         } else if (L2A_CONDITION) {
             fwd_L2a_2d(temp_buf_pad, dst->data, w, h, l, fm);
         } else if (L1_CONDITION) {
@@ -889,44 +662,48 @@ dsv_fwd_sbt(DSV_PLANE *src, DSV_COEFS *dst, DSV_FMETA *fm)
 extern void
 dsv_inv_sbt(DSV_PLANE *dst, DSV_COEFS *src, int q, DSV_FMETA *fm)
 {
-    int w, h, lvls, l, hqp, ovf_safety;
-    DSV_SBC *temp_buf_pad;
+    int w, h, lvls, l, hqpLH, hqpHL, ovf_safety;
+    DSV_SBC *temp_buf_pad, *temp_buf_line;
 
     w = src->width;
     h = src->height;
 
     lvls = nlevels(w, h);
-    alloc_temp((w + 2) * (h + 2));
-    temp_buf_pad = temp_buf + w;
+    temp_buf_pad = fm->transform_buf + w;
+    temp_buf_line = fm->transform_buf + ((w + 2) * (h + 2));
 
     for (l = lvls; l > 0; l--) {
-        hqp = (fm->cur_plane == 0) ? (q / (fm->isP ? 14 : (l > 4 ? 2 : 8))) : (q / 2);
+        int sw, sh;
+        sw = DSV_ROUND_SHIFT(w, l - 1);
+        sh = DSV_ROUND_SHIFT(h, l - 1);
+
+        if (l >= 4) {
+            hqpLH = dsv_lfquant(fm, q);
+            hqpHL = hqpLH;
+        } else {
+            hqpLH = dsv_hfquant(fm, q, 1, 3 - l);
+            hqpHL = dsv_hfquant(fm, q, 2, 3 - l);
+        }
         ovf_safety = OVF_SAFETY_CONDITION;
 
         if (fm->params->lossless) {
-            if ((l >= 1 && l <= (lvls - 2))) {
-                inv_2d(temp_buf_pad, src->data, w, h, l, ifilterLOSSLESS);
+            if (l >= 1 && l <= (lvls - 2)) {
+                inv_2d(temp_buf_line, src->data, sw, sh, w, dwt_inverse, 1, 1);
             } else {
-                inv_simple(src->data, temp_buf_pad, w, h, l, ovf_safety);
+                inv(src->data, temp_buf_pad, w, h, l, 0, 0, ovf_safety);
             }
             continue;
         }
         if (LLI_CONDITION) {
-            inv_2d(temp_buf_pad, src->data, w, h, l, ifilterLLI);
-        } else if (LLP_CONDITION) {
-            inv_2d(temp_buf_pad, src->data, w, h, l, ifilterLLP);
+            inv_2d(temp_buf_line, src->data, sw, sh, w, dwt_inverse, 2, 2);
         } else if (CC_CONDITION) {
-            inv_2d(temp_buf_pad, src->data, w, h, l, ifilterCC);
+            inv_2d(temp_buf_line, src->data, sw, sh, w, dwt_inverse, 2, 1);
         } else if (L2A_CONDITION) {
             inv_L2a_2d(temp_buf_pad, src->data, w, h, l, fm);
         } else if (L1_CONDITION) {
-            inv_2d(temp_buf_pad, src->data, w, h, l, ifilterL1);
+            inv_2d(temp_buf_line, src->data, sw, sh, w, dwt_inverse, 2, 4);
         } else {
-            if (fm->cur_plane == 0 || !fm->isP) {
-                inv(src->data, temp_buf_pad, w, h, l, hqp, ovf_safety);
-            } else {
-                inv_simple(src->data, temp_buf_pad, w, h, l, ovf_safety);
-            }
+            inv(src->data, temp_buf_pad, w, h, l, hqpLH, hqpHL, ovf_safety);
         }
     }
 

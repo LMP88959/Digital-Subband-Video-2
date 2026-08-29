@@ -4,7 +4,7 @@
  *   DSV-2
  *
  *     -
- *    =--  2024-2025 EMMIR
+ *    =--  2024-2026 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -30,9 +30,6 @@
 #define HL       2
 #define HH       3
 
-#define MINQP    3
-#define MINQUANT (1 << MINQP)  /* C.2 MINQUANT */
-
 #define RUN_BITS 24
 
 /* C.1 Subband Order and Traversal */
@@ -40,11 +37,14 @@ static int
 subband(int level, int sub, int w, int h)
 {
     int offset = 0;
+    int shift = MAXLVL - level;
+    DSV_ASSERT(shift >= 0);
+
     if (sub & 1) { /* L */
-        offset += DSV_ROUND_SHIFT(w, MAXLVL - level);
+        offset += DSV_ROUND_SHIFT(w, shift);
     }
     if (sub & 2) { /* H */
-        offset += DSV_ROUND_SHIFT(h, MAXLVL - level) * w;
+        offset += DSV_ROUND_SHIFT(h, shift) * w;
     }
     return offset;
 }
@@ -56,13 +56,10 @@ dimat(int level, int v) /* dimension at level */
     return DSV_ROUND_SHIFT(v, MAXLVL - level);
 }
 
-static int
-fix_quant(int q)
-{
-    return q * 3 / 2;
-}
-
-/* larger dimensions -> higher freq is less important */
+/* larger dimensions -> higher freq is less important.
+ * lower resolutions have a smaller factor and
+ * higher resolutions have a larger factor
+ * CIF(352x288)=0, FHD(1920x1080)=128 */
 extern int
 dsv_spatial_psy_factor(DSV_PARAMS *p, int subband)
 {
@@ -82,18 +79,19 @@ dsv_spatial_psy_factor(DSV_PARAMS *p, int subband)
         scale = p->nblocks_h * p->nblocks_v;
     }
     scale = MAX(0, scale - lo);
-    return (scale << 7) / (hi - lo);
+    scale = (scale << 7) / MAX(hi - lo, 1);
+    return CLAMP(scale, 0, 128);
 }
 
-static int
-lfquant(int q, DSV_FMETA *fm)
+extern int
+dsv_lfquant(DSV_FMETA *fm, int q)
 {
     int psyfac;
 
     psyfac = dsv_spatial_psy_factor(fm->params, HH);
 
-    q -= (q * psyfac >> (7 + 3));
-    q = MAX(q, MINQUANT);
+    q -= (q * psyfac >> (7 + (fm->isP ? 1 : 3)));
+    q = MAX(q / 2, 2);
     /* prevent important lower level coefficients from getting destroyed */
     if (fm->cur_plane) {
         if (q > 256) {
@@ -104,16 +102,17 @@ lfquant(int q, DSV_FMETA *fm)
     return MIN(q, 3072);
 }
 
-static int
-hfquant(DSV_FMETA *fm, int q, int s, int l)
+extern int
+dsv_hfquant(DSV_FMETA *fm, int q, int s, int l)
 {
-    int psyfac, chroma;
+    int psyq, psyfac, chroma;
 
     chroma = (fm->cur_plane != 0);
     psyfac = dsv_spatial_psy_factor(fm->params, s);
+
     q /= 2;
 
-    psyfac = q * psyfac >> (7 + (fm->isP ? 0 : 1));
+    psyq = q * psyfac >> (7 + (fm->isP ? 0 : 1));
 
     if (chroma) {
         /* reduce based on subsampling */
@@ -124,141 +123,156 @@ hfquant(DSV_FMETA *fm, int q, int s, int l)
         } else if (s == HL) {
             tl += DSV_FORMAT_V_SHIFT(fm->params->vidmeta->subsamp);
         }
-        q = (q * 6) / (4 - tl);
+        q = (q * 6) / MAX(4 - tl, 1);
     } else {
         /* reduce higher frequencies appropriately */
         if (l == LVL2) {
-            q += psyfac / 2;
+            q += psyq / 2;
         } else if (l == LVL1) {
-            q += psyfac;
+            q += psyq;
         }
     }
-
     if (fm->isP) {
+        int div = 16;
+        if (l == LVL3) {
+            q = q * 3 / 2;
+        }
         if (l != LVL1) {
-            if (l == LVL3) {
-                q *= 2;
-                q -= psyfac;
-            } else {
-                q -= psyfac / 2;
-            }
+            div += dsv_flb2(psyfac / 16) >> (5 + l);
         }
-        return MAX(q / 4, MINQUANT);
+        return MAX(q * 4 / div, DSV_MINQUANT);
     }
-    q = q * (15 + 3 * l) / 16;
+    if (s == HH) { /* quantize HH more */
+        q *= (l * 2 + 1);
+    }
+    q += q * l / 4;
     if (!chroma) {
-        if (l == LVL3) { /* luma level 3 (Haar) needs to be quantized less */
-            q = (q * 3) / 8;
-        } else if (s == HH) { /* quantize HH more */
-            q *= 2;
-        }
+        q = (q * (l * 3 + 3)) / 8;
     } else {
         q /= 4;
-        if (s == HH) { /* quantize HH more */
-            q *= 2;
-        }
     }
-    return MAX(q, MINQUANT);
+    return MAX(q, DSV_MINQUANT);
 }
 
-#define TMQ4POS_P(tmq, flags)                                     \
-    if (parc || (((flags) & (DSV_IS_STABLE | DSV_IS_EPRM)))) {    \
-        tmq = (tmq) * 7 >> 3;                                     \
-    } else if (!parc && ((flags) & DSV_IS_INTRA)) {               \
-        tmq = (tmq) * 6 >> 3;                                     \
-    }
-
-#define TMQ4POS_I(tmq, flags, l)                                         \
-        switch (l) {                                                     \
-            case MAXLVL - 3:                                             \
-                break;                                                   \
-            default:                                                     \
-            case MAXLVL - 2:                                             \
-                switch ((flags) & (DSV_IS_STABLE | DSV_IS_MAINTAIN)) {   \
-                    case DSV_IS_STABLE:                                  \
-                        tmq /= 3;                                        \
-                        break;                                           \
-                    case DSV_IS_MAINTAIN:                                \
-                        tmq >>= (((flags) & DSV_IS_RINGING) ? 2 : !parc);\
-                        break;                                           \
-                    case DSV_IS_MAINTAIN | DSV_IS_STABLE:                \
-                        tmq >>= 2;                                       \
-                        break;                                           \
-                    default:                                             \
-                        break;                                           \
-                }                                                        \
-                break;                                                   \
-            case MAXLVL - 1:                                             \
-                switch ((flags) & (DSV_IS_STABLE | DSV_IS_MAINTAIN)) {   \
-                    case DSV_IS_STABLE:                                  \
-                        tmq >>= 2;                                       \
-                        break;                                           \
-                    case DSV_IS_MAINTAIN:                                \
-                        tmq >>= (((flags) & DSV_IS_RINGING) ? 2 : !parc);\
-                        break;                                           \
-                    case DSV_IS_MAINTAIN | DSV_IS_STABLE:                \
-                        tmq >>= 2 + !parc;                               \
-                        break;                                           \
-                    default:                                             \
-                        break;                                           \
-                }                                                        \
-                break;                                                   \
+#define TMQ4POS_I(tmq, flags, l)                                            \
+        switch (l) {                                                        \
+            case MAXLVL - 3:                                                \
+                break;                                                      \
+            default:                                                        \
+            case MAXLVL - 2:                                                \
+                switch ((flags) & (DSV_IS_STABLE | DSV_IS_MAINTAIN)) {      \
+                    case DSV_IS_STABLE:                                     \
+                        if (!parc) { tmq = tmq * 2 / 5; } else { tmq /= 3; }\
+                        break;                                              \
+                    case DSV_IS_MAINTAIN:                                   \
+                        tmq >>= (((flags) & DSV_IS_RINGING) ?  2 : !parc);  \
+                        break;                                              \
+                    case DSV_IS_MAINTAIN | DSV_IS_STABLE:                   \
+                        if (parc) { tmq /= 4; } else { tmq /= 6; }          \
+                        break;                                              \
+                    default:                                                \
+                        break;                                              \
+                }                                                           \
+                break;                                                      \
+            case MAXLVL - 1:                                                \
+                switch ((flags) & (DSV_IS_STABLE | DSV_IS_MAINTAIN)) {      \
+                    case DSV_IS_STABLE:                                     \
+                        if (!parc) { tmq /= 3; } else { tmq /= 4; }         \
+                        break;                                              \
+                    case DSV_IS_MAINTAIN:                                   \
+                        tmq >>= (((flags) & DSV_IS_RINGING) ? 2 : !parc);   \
+                        break;                                              \
+                    case DSV_IS_MAINTAIN | DSV_IS_STABLE:                   \
+                        if (parc) { tmq /= 6; } else { tmq /= 8; }          \
+                        break;                                              \
+                    default:                                                \
+                        break;                                              \
+                }                                                           \
+                break;                                                      \
         }
 
-
-#define quantSUB(v, q, sub) ((((v) >= 0 ? (v) - (sub) : (v) + (sub)) / (q)))
-
-#define quantS(v, q) ((v) / (q))
-
-#define dequantL(v,q) (isP ? dequantD(v,q) : dequantS(v,q))
-#define dequantH(v,q) (dequantD(v, q))
-
-/* uses estimator which saturates the value more */
-static DSV_SBC
-dequantS(int v, unsigned q)
+static int
+quantLUMA_L(int v, int q)
 {
-    return (v * q) + ((v < 0) ? -(q * 2 / 3) : (q * 2 / 3));
+    if (v < 0) {
+        return -((-v) + q) / (2 * q);
+    }
+    return (v + q) / (2 * q);
 }
 
-/* default estimator */
-static DSV_SBC
-dequantD(int v, unsigned q)
+static int
+quantLUMA_INTRA(int v, int q)
 {
-    return (v * q) + ((v < 0) ? -(q / 2) : (q / 2));
+    if (v < 0) {
+        return -((-v) + ((q * 3 + 4) >> 3)) / (2 * q);
+    }
+    return (v + ((q * 3 + 4) >> 3)) / (2 * q);
 }
 
-#define DAMP (3 + l)
-#define PUTV(bs, v)  (dsv_bs_put_nrice(bs, v, &vk, DAMP))
-#define GETV(bs)     (dsv_bs_get_nrice(bs, &vk, DAMP))
+static int
+quantCHROMA(int v, int q)
+{
+    if (v < 0) {
+        return -((-v) + ((q * 3 + 2) >> 2)) / (2 * q);
+    }
+    return (v + ((q * 3 + 2) >> 2)) / (2 * q);
+}
+
+static int
+quantSUB(int v, int q, int sub, int subfac)
+{
+    if (v < 0) {
+        return -(((-v) - sub) + (q * subfac >> 8)) / (2 * q);
+    }
+    return ((v - sub) + (q * subfac >> 8)) / (2 * q);
+}
+
+static int
+quantSUB_P(int v, int q, int sub, int subfac)
+{
+    if (v < 0) {
+        return -((-v) - (sub + (q * subfac >> 8))) / (2 * q);
+    }
+    return (v - (sub + (q * subfac >> 8))) / (2 * q);
+}
+
+#define quantDZ(v, q) ((v) / (2 * (q)))
+
+#define quantSL(v, q) (isP ? \
+        quantDZ(v,q) : \
+        (fm->cur_plane ? quantCHROMA(v,q) : quantLUMA_L(v,q)))
+
+#define dequantU(v, q) ((v) * 2 * (q)) /* uniform */
+#define dequantDZ(v, q) ((q) * ((v) * 2 + ((v) >= 0 ? 1 : -1))) /* deadzone */
+#define dequant(v, q, isP) (isP ? dequantDZ(v,q) : dequantU(v,q))
+
+#define PUTV(bs, v)  (dsv_bs_put_nrice(bs, v, &vk, &vavg))
+#define GETV(bs)     (dsv_bs_get_nrice(bs, &vk, &vavg))
 
 static void
 hzcc_enc(DSV_BS *bs, DSV_SBC *src, int w, int h, int q, DSV_FMETA *fm)
 {
     int x, y, l, s, o, v;
     int sw, sh;
-    int bx, by;
-    int dbx, dby;
     int qp;
     int run = 0;
     int nruns = 0;
     DSV_SBC *srcp;
     int startp, endp;
     int isP;
-    int vk = 0;
+    unsigned vk = 0, vavg = 0; /* for Rice encoding */
 
     dsv_bs_align(bs);
     startp = dsv_bs_ptr(bs);
     dsv_bs_put_bits(bs, RUN_BITS, 0);
     dsv_bs_align(bs);
 
-    q = fix_quant(q);
-
     s = l = 0;
     isP = fm->isP;
 
     sw = dimat(l, w);
     sh = dimat(l, h);
-    qp = lfquant(q, fm);
+    qp = dsv_lfquant(fm, q);
 
     /* write the 'LL' part */
     o = subband(l, s, w, h);
@@ -308,13 +322,9 @@ hzcc_enc(DSV_BS *bs, DSV_SBC *src, int w, int h, int q, DSV_FMETA *fm)
         /* C.2.3 LL Subband */
         for (y = 0; y < sh; y++) {
             for (x = 0; x < sw; x++) {
-                if (!fm->isP) {
-                    v = quantSUB(srcp[x], qp, -(qp / 6));
-                } else {
-                    v = quantS(srcp[x], qp);
-                }
+                v = quantSL(srcp[x], qp);
                 if (v) {
-                    srcp[x] = dequantL(v, qp);
+                    srcp[x] = dequant(v, qp, isP);
                     dsv_bs_put_ueg(bs, run);
                     dsv_bs_put_neg(bs, v);
                     run = -1;
@@ -328,100 +338,77 @@ hzcc_enc(DSV_BS *bs, DSV_SBC *src, int w, int h, int q, DSV_FMETA *fm)
         }
         for (l = 0; l < MAXLVL; l++) {
             uint8_t *blockrow;
-            DSV_MV *mvrow;
+            uint8_t *sbfacrow;
             int psyI, psyP;
+            int dbx, dby, dvx, dvy;
+            int bx, by, vx, vy;
 
             sw = dimat(l, w);
             sh = dimat(l, h);
             dbx = (fm->params->nblocks_h << DSV_BLOCK_INTERP_P) / sw;
             dby = (fm->params->nblocks_v << DSV_BLOCK_INTERP_P) / sh;
+            dvx = ((fm->params->nblocks_h * 2) << DSV_BLOCK_INTERP_P) / sw;
+            dvy = ((fm->params->nblocks_v * 2) << DSV_BLOCK_INTERP_P) / sh;
             qp = q;
-            psyI = (fm->params->do_psy & DSV_PSY_I_VISUAL_MASKING) && !fm->cur_plane;
-            psyP = (fm->params->do_psy & DSV_PSY_P_VISUAL_MASKING) && !fm->cur_plane;
+            psyI = (fm->params->do_psy & DSV_PSY_I_VISUAL_MASKING);
+            psyP = (fm->params->do_psy & DSV_PSY_P_VISUAL_MASKING);
             /* C.2.4 Higher Level Subbands */
             for (s = 1; s < NSUBBAND; s++) {
-                int gpar, par;
-                DSV_SBC *gparent, *parent;
-                gpar = subband(l - 2, s, w, h);
+                int par;
+                DSV_SBC *parent;
+
                 par = subband(l - 1, s, w, h);
                 o = subband(l, s, w, h);
-                qp = hfquant(fm, q, s, l);
+                qp = dsv_hfquant(fm, q, s, l);
 
                 srcp = src + o;
                 by = 0;
+                vy = 0;
                 for (y = 0; y < sh; y++) {
                     bx = 0;
+                    vx = 0;
                     blockrow = fm->blockdata + (by >> DSV_BLOCK_INTERP_P) * fm->params->nblocks_h;
-                    mvrow = fm->mvs + (by >> DSV_BLOCK_INTERP_P) * fm->params->nblocks_h;
-                    gparent = src + gpar + (((y >> 2)) * w);
+                    sbfacrow = fm->sb_facs + (vy >> DSV_BLOCK_INTERP_P) * 2 * fm->params->nblocks_h;
+
                     parent = src + par + ((y >> 1) * w);
                     for (x = 0; x < sw; x++) {
                         int tmq = qp;
                         int flags = blockrow[bx >> DSV_BLOCK_INTERP_P];
-                        DSV_MV *mv = &mvrow[bx >> DSV_BLOCK_INTERP_P];
-                        int gparc = gparent[x >> 2];
                         int parc = parent[x >> 1];
+                        int varr = sbfacrow[vx >> DSV_BLOCK_INTERP_P];
 
-                        int texture = !parc; /* texture has no parent, edge has parent */
-                        int gtexture = !gparc; /* texture has no parent, edge has parent */
                         if (isP) {
-                            TMQ4POS_P(tmq, flags);
-#define MV_LT(v, t) (abs((v)->u.mv.x) < (t) && abs((v)->u.mv.y) < (t)) /* less than */
-
-                            if (psyP) {
-                                if ((gtexture && texture) || DSV_MV_IS_EPRM(mv) || (DSV_MV_IS_MAINTAIN(mv) && MV_LT(mv, 32))) {
-                                    v = quantSUB(srcp[x], tmq, tmq >> 3);
+                            if (fm->cur_plane) {
+                                v = quantDZ(srcp[x], tmq);
+                            } else if (psyP) {
+                                if (flags & DSV_IS_SIMCMPLX) {
+                                    v = quantSUB_P(srcp[x], tmq, tmq >> 2, varr);
                                 } else {
-                                    if (texture || !(flags & DSV_IS_SIMCMPLX)) {
-                                        v = quantSUB(srcp[x], tmq, tmq / 6);
-                                    } else {
-                                        v = quantSUB(srcp[x], tmq, tmq >> 2);
-                                    }
+                                    v = quantSUB_P(srcp[x], tmq, -(tmq >> 2), varr);
                                 }
                             } else {
-                                v = quantS(srcp[x], tmq);
+                                v = quantDZ(srcp[x], tmq);
                             }
                         } else {
                             TMQ4POS_I(tmq, flags, l);
                             /* psychovisual: visual masking */
-                            if (psyI) {
-#define sign(x) ((x) < 0 ? -1 : (x) > 0 ? 1 : 0)
-                                int edge, stp, smf;
-
-                                smf = flags & (DSV_IS_MAINTAIN | DSV_IS_STABLE);
-
+                            if (fm->cur_plane) {
+                                v = quantCHROMA(srcp[x], tmq);
+                            } else if (psyI) {
                                 if (flags & DSV_IS_RINGING) {
-                                    v = quantSUB(srcp[x], tmq, -(tmq / 6));
+                                    v = quantSUB(srcp[x], tmq, -tmq / 4, varr);
                                 } else {
-                                    switch (l) {
-                                        case LVL3:
-                                            v = quantSUB(srcp[x], tmq, -(tmq >> 3));
-                                            break;
-                                        default:
-                                        case LVL1:
-                                        case LVL2:
-                                            edge = sign(parc) == sign(srcp[x]);
-                                            if (smf == 0) {
-                                                stp = -tmq / 3;
-                                            } else if (edge && (smf == DSV_IS_STABLE)) {
-                                                stp = tmq >> 3;
-                                            } else {
-                                                stp = -tmq / 6;
-                                            }
-                                            v = quantSUB(srcp[x], tmq, stp);
-                                            break;
-                                    }
+                                    int edge = DSV_SIGNOF(parc) == DSV_SIGNOF(srcp[x]);
+                                    v = quantSUB(srcp[x], tmq,
+                                            (edge || parc) ? (-tmq / 4) : (-tmq / 8),
+                                                    (edge && varr >= 160) ? 0 : varr);
                                 }
                             } else {
-                                if (fm->cur_plane) {
-                                    v = quantSUB(srcp[x], tmq, -(tmq >> 3));
-                                } else {
-                                    v = quantS(srcp[x], tmq);
-                                }
+                                v = quantLUMA_INTRA(srcp[x], tmq);
                             }
                         }
                         if (v) {
-                            srcp[x] = dequantH(v, tmq);
+                            srcp[x] = dequant(v, tmq, isP);
                             dsv_bs_put_ueg(bs, run);
                             PUTV(bs, v);
                             run = -1;
@@ -431,9 +418,11 @@ hzcc_enc(DSV_BS *bs, DSV_SBC *src, int w, int h, int q, DSV_FMETA *fm)
                         }
                         run++;
                         bx += dbx;
+                        vx += dvx;
                     }
                     srcp += w;
                     by += dby;
+                    vy += dvy;
                 }
             }
         }
@@ -461,19 +450,18 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
     int w = dst->width;
     int h = dst->height;
     int isP;
-    int vk = 0;
+    unsigned vk = 0, vavg = 0; /* for Rice decoding */
 
     dsv_bs_align(bs);
     runs = dsv_bs_get_bits(bs, RUN_BITS);
     dsv_bs_align(bs);
 
-    q = fix_quant(q);
     s = l = 0;
     isP = fm->isP;
 
     sw = dimat(l, w);
     sh = dimat(l, h);
-    qp = lfquant(q, fm);
+    qp = dsv_lfquant(fm, q);
 
     o = subband(l, s, w, h);
     outp = out + o;
@@ -527,7 +515,7 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
                     if (dsv_bs_ptr(bs) >= bufsz) {
                         return;
                     }
-                    outp[x] = dequantL(v, qp);
+                    outp[x] = dequant(v, qp, isP);
                 }
             }
             outp += w;
@@ -546,7 +534,7 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
                 int par;
                 par = subband(l - 1, s, w, h);
                 o = subband(l, s, w, h);
-                qp = hfquant(fm, q, s, l);
+                qp = dsv_hfquant(fm, q, s, l);
 
                 outp = out + o;
                 by = 0;
@@ -557,19 +545,17 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
                     for (x = 0; x < sw; x++) {
                         if (!run--) {
                             int tmq = qp;
-                            int flags = blockrow[bx >> DSV_BLOCK_INTERP_P];
-                            int parc = parent[x >> 1];
                             v = GETV(bs);
                             run = (runs-- > 0) ? dsv_bs_get_ueg(bs) : INT_MAX;
                             if (dsv_bs_ptr(bs) >= bufsz) {
                                 return;
                             }
-                            if (isP) {
-                                TMQ4POS_P(tmq, flags);
-                            } else {
+                            if (!isP) {
+                                int flags = blockrow[bx >> DSV_BLOCK_INTERP_P];
+                                int parc = parent[x >> 1];
                                 TMQ4POS_I(tmq, flags, l);
                             }
-                            outp[x] = dequantH(v, tmq);
+                            outp[x] = dequant(v, tmq, isP);
                         }
                         bx += dbx;
                     }
