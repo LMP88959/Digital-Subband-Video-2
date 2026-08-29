@@ -3,7 +3,7 @@
  * Digital Subband Video 2.8 Single-Header Decoder Implementation
  *
  *     -
- *    =--  2024-2025 EMMIR
+ *    =--  2024-2026 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -427,8 +427,7 @@ decode(void)
             return EXIT_FAILURE;
         }
     }
-    /* zero decoder struct */
-    memset(&dec, 0, sizeof(dec));
+    d28_dec_init(&dec);
     to_420p = get_optval(dec_params, "out420p");
     as_y4m = get_optval(dec_params, "y4m");
     if (verbose) {

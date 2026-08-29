@@ -4,7 +4,7 @@
  *   DSV-2
  *
  *     -
- *    =--  2024-2025 EMMIR
+ *    =--  2024-2026 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -23,7 +23,7 @@ extern "C" {
 
 #include "dsv_internal.h"
 
-#define DSV_ENCODER_VERSION 14
+#define DSV_ENCODER_VERSION 15
 
 #define DSV_GOP_INTRA 0
 #define DSV_GOP_INF   INT_MAX
@@ -66,12 +66,21 @@ typedef struct _DSV_ENCDATA {
 } DSV_ENCDATA;
 
 typedef struct {
+    int scene_change_blocks;
+    int avg_err;
+    int var_err;
+    int tot_ivar;
+    int tot_var;
+} DSV_ME_STATS;
+
+typedef struct {
     int quality;
 
     int effort; /* encoder effort. DSV_MIN_EFFORT...DSV_MAX_EFFORT */
 
     int gop; /* GOP (Group of Pictures) length */
 
+    int do_chroma_me; /* use chroma information in motion estimation */
     int do_scd; /* scene change detection */
     int do_temporal_aq; /* toggle temporal adaptive quantization for I frames */
 #define DSV_PSY_ADAPTIVE_QUANT      (1 << 0)
@@ -82,7 +91,7 @@ typedef struct {
 
 #define DSV_PSY_ALL 0xff
     int do_psy; /* BITFIELD enable psychovisual optimizations */
-    int do_dark_intra_boost; /* boost quality in dark intra frames */
+    int do_dark_boost; /* boost quality in dark intra frames */
     int do_intra_filter; /* deringing filter on intra frames */
     int do_inter_filter; /* cleanup filter on inter frames */
 
@@ -94,6 +103,7 @@ typedef struct {
     int block_size_override_y;
 
     int variable_i_interval; /* intra frame insertions reset GOP counter */
+    int no_i_frame_near_end; /* if we are near the explicitly specified end of the video, don't add an I frame */
     /* rate control */
     int rc_mode; /* rate control mode */
 
@@ -112,16 +122,17 @@ typedef struct {
     int scene_change_pct;
     unsigned stable_refresh; /* # frames after which stability accum resets */
     int pyramid_levels;
+    unsigned total_fnum; /* total number of frames to encode, leave at 0 if unknown */
 
     struct DSV_STATS {
         unsigned inum; /* num I frames */
         unsigned pnum; /* num P frames */
-        unsigned iqual; /* total I frame quality */
-        unsigned pqual; /* total P frame quality */
-        unsigned iminq; /* min I frame quality */
-        unsigned pminq; /* min P frame quality */
-        unsigned imaxq; /* max I frame quality */
-        unsigned pmaxq; /* max P frame quality */
+        unsigned iqualquan[2]; /* total I frame quality+quant */
+        unsigned pqualquan[2]; /* total P frame quality+quant */
+        unsigned iminqq[2]; /* min I frame quality+quant */
+        unsigned pminqq[2]; /* min P frame quality+quant */
+        unsigned imaxqq[2]; /* max I frame quality+quant */
+        unsigned pmaxqq[2]; /* max P frame quality+quant */
         unsigned isize; /* total I frame size (bytes) */
         unsigned psize; /* total P frame size (bytes) */
         unsigned imins; /* min I frame size (bytes) */
@@ -150,7 +161,7 @@ typedef struct {
     unsigned rc_qual;
     /* bpf = bytes per frame
      * rf = rate factor (the factor being optimized for) */
-#define DSV_RF_RESET 256 /* # frames after which average RF resets */
+    unsigned rf_reset_count;
     unsigned rf_total;
     unsigned rf_reset;
     int rf_avg;
@@ -159,13 +170,12 @@ typedef struct {
     int prev_complexity;
     int curr_complexity;
     int curr_avgmot;
-    int curr_intra_pct;
-    int curr_scblocks;
+    int curr_settled;
+    int curr_settlederr;
     int prev_chaos;
+    int prev_la; /* previous average frame luma */
     int motion_chaos;
     int motion_static;
-    int avg_err;
-    int auto_filter;
 
     void (*frame_callback)(DSV_META *m, DSV_FRAME *orig, DSV_FRAME *recon);
 
@@ -180,11 +190,21 @@ typedef struct {
         int32_t y;
     } *stability;
     unsigned refresh_ctr;
+    unsigned transform_buf_sz;
+    DSV_SBC *transform_buf;
     uint8_t *blockdata;
-    uint8_t *intra_map;
+    uint8_t *sb_facs;
+    uint8_t *changemap;
+    uint8_t *loss_map;
+    unsigned total_loss;
 
     DSV_FNUM prev_gop;
     int prev_quant;
+    int total_P_quant;
+    int avg_P_quant;
+    int pframes_since_iframe;
+
+    DSV_ME_STATS mes;
 } DSV_ENCODER;
 
 extern void dsv_enc_init(DSV_ENCODER *enc);
@@ -209,10 +229,12 @@ typedef struct {
     DSV_MV mv_bank[128];
     int n_mv_bank_used;
     DSV_ENCODER *enc;
-    int quant;
+    int prev_quant;
+    int avg_quant;
+    DSV_ME_STATS *mes;
 } DSV_HME;
 
-extern int dsv_hme(DSV_HME *hme, int *scene_change_blocks, int *avg_err);
+extern void dsv_hme(DSV_HME *hme);
 
 #ifdef __cplusplus
 }

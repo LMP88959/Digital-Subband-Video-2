@@ -4,7 +4,7 @@
  *   DSV-2
  *
  *     -
- *    =--  2024-2025 EMMIR
+ *    =--  2024-2026 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -23,16 +23,18 @@ clamp_u8(int v)
 }
 
 static int
-avgval(uint8_t *dec, int dw, int w, int h)
+avgval(uint8_t *a, int as, int w, int h)
 {
     int i, j;
     int avg = 0;
-
+    if (w == 0 || h == 0) {
+        return 0;
+    }
     for (j = 0; j < h; j++) {
         for (i = 0; i < w; i++) {
-            avg += dec[i];
+            avg += a[i];
         }
-        dec += dw;
+        a += as;
     }
     return avg / (w * h);
 }
@@ -49,342 +51,186 @@ cpyblk(uint8_t *dec, uint8_t *ref, int dw, int rw, int w, int h)
 }
 
 /* D.5.2 Filtering */
-
-#define ITEST4x4(t) (abs(e0 - avg) < (t) && \
-                     abs(i0 - avg) < (t) && \
-                     abs(e1 - avg) < (t) && \
-                     abs(i1 - avg) < (t) && \
-                     abs(e2 - avg) < (t) && \
-                     abs(i2 - avg) < (t))
+#define ITEST4x4_FLAT(e, f) (abs(e0 - avg) < (e) && \
+                             abs(i0 - avg) < (e) && \
+                             abs(e1 - avg) < (f) && \
+                             abs(i1 - avg) < (f) && \
+                             abs(e2 - avg) < (f) && \
+                             abs(i2 - avg) < (f))
 
 #define FILTER_DIM 4 /* do not touch, filters are hardcoded as 4x4 operations */
 
+#define LPF ((8 * (i0 + e0) + 5 * (e1 + i1) + 3 * (e2 + i2) + 16) >> 5)
 
-#define LPF ((5 * (e0 + i0) + 3 * (e1 + i1) + 8) >> 4)
+#define FC_E1 ((4 * e1 + 2 * e2 + i0 + e0 + 4) >> 3)
+#define FC_E0 ((2 * (i0 + e0 + e1) + i1 + e2 + 4) >> 3)
+#define FC_I0 ((2 * (i1 + i2 + e1) + e0 + i0 + 4) >> 3)
 
-#define FC_E1 ((3 * (avg + e1) + 2 * e2 + 4) >> 3)
-#define FC_E0 ((avg + 2 * e1 + e2 + 4) >> 3)  /* assumes avg was already *= 5 */
-#define FC_I0 (avg)
-#define FC_I1 ((avg + 2 * i1 + i2 + 4) >> 3)  /* assumes avg was already *= 5 */
-
+/* these filtering functions, when combined, give a strong blur */
 static void
-ihfilter4x4(DSV_PLANE *dp, int x, int y, int edge, int threshE, int threshM)
+ihfilter4x4(DSV_PLANE *dp, int x, int y, int threshE, int threshF)
 {
     int line, top, bot;
-    uint8_t *b = dp->data;
-    int w = dp->w;
-    int h = dp->h;
     int s = dp->stride;
-    int in_edge;
 
-    if ((x < FILTER_DIM) || (x > w - FILTER_DIM) ||
-        (edge && threshE <= 0) || (threshM <= 0)) {
+    if (threshE <= 0 || threshF <= 0) {
         return;
     }
-    top = x + CLAMP(y, 0, (h - 1)) * s;
-    bot = x + CLAMP(y + FILTER_DIM, 0, (h - 1)) * s;
-    in_edge = x < (w - FILTER_DIM - FILTER_DIM);
-    if (!edge) {
-        threshE = threshM;
-    }
+    top = x + y * s;
+    bot = x + (y + FILTER_DIM) * s;
+
     for (line = top; line < bot; line += s) {
         int i2, i1, i0, e0, e1, e2, avg;
+        uint8_t *b;
 
-        e2 = b[line - 3];
-        e1 = b[line - 2];
-        e0 = b[line - 1];
-        i0 = b[line + 0];
-        i1 = b[line + 1];
-        i2 = b[line + 2];
-
+        b = dp->data + line;
+        e2 = b[-3];
+        e1 = b[-2];
+        e0 = b[-1];
+        i0 = b[0];
+        i1 = b[1];
+        i2 = b[2];
         avg = LPF;
-        if (ITEST4x4(threshE)) {
-            b[line - 2] = FC_E1;
-            b[line + 0] = FC_I0;
-            avg *= 5;
-            b[line - 1] = FC_E0;
-            b[line + 1] = FC_I1;
+        if (ITEST4x4_FLAT(threshE, threshF)) {
+            b[-2] = FC_E1;
+            b[-1] = FC_E0;
+            b[0] = FC_I0;
         }
 
-        if (in_edge) {
-            int k = line + FILTER_DIM;
-            i2 = b[k - 2];
-            i1 = b[k - 1];
-            i0 = b[k + 0];
-            e0 = b[k + 1];
-            e1 = b[k + 2];
-            e2 = b[k + 3];
-
-            avg = LPF;
-            if (ITEST4x4(threshM)) {
-                b[k + 0] = FC_I0;
-                b[k + 2] = FC_E1;
-                avg *= 5;
-                b[k - 1] = FC_I1;
-                b[k + 1] = FC_E0;
-            }
+        b += FILTER_DIM;
+        i2 = b[-2];
+        i1 = b[-1];
+        i0 = b[0];
+        e0 = b[1];
+        e1 = b[2];
+        e2 = b[3];
+        avg = LPF;
+        if (ITEST4x4_FLAT(threshE, threshF)) {
+            b[0] = FC_I0;
+            b[1] = FC_E0;
+            b[2] = FC_E1;
         }
     }
 }
 
 static void
-ivfilter4x4(DSV_PLANE *dp, int x, int y, int edge, int threshE, int threshM)
+ivfilter4x4(DSV_PLANE *dp, int x, int y, int threshE, int threshF)
 {
     int beg, end;
     int i, s2, s3;
-    int w = dp->w;
-    int h = dp->h;
     int s = dp->stride;
-    uint8_t *b = dp->data;
-    uint8_t *bk = b + FILTER_DIM * s;
-    int in_edge;
+    uint8_t *bk;
 
-    if ((y < FILTER_DIM) || (y > h - FILTER_DIM) ||
-        (edge && threshE <= 0) || (threshM <= 0)) {
+    if (threshE <= 0 || threshF <= 0) {
         return;
     }
-    beg = CLAMP(x, 0, (w - 1)) + y * s;
-    end = CLAMP(x + FILTER_DIM, 0, (w - 1)) + y * s;
+    bk = dp->data + FILTER_DIM * s;
+    beg = x + y * s;
+    end = x + FILTER_DIM + y * s;
     s2 = s * 2;
     s3 = s * 3;
-    in_edge = y < (h - FILTER_DIM - FILTER_DIM);
-    if (!edge) {
-        threshE = threshM;
-    }
+
     for (i = beg; i < end; i++) {
         int i2, i1, i0, e0, e1, e2, avg;
+        uint8_t *b;
 
-        e2 = b[i - s3];
-        e1 = b[i - s2];
-        e0 = b[i - s];
-        i0 = b[i + 0];
-        i1 = b[i + s];
-        i2 = b[i + s2];
-
+        b = dp->data + i;
+        e2 = b[-s3];
+        e1 = b[-s2];
+        e0 = b[-s];
+        i0 = b[0];
+        i1 = b[s];
+        i2 = b[s2];
         avg = LPF;
-        if (ITEST4x4(threshE)) {
-            b[i - s2] = FC_E1;
-            b[i + 0] = FC_I0;
-            avg *= 5;
-            b[i - s] = FC_E0;
-            b[i + s] = FC_I1;
+        if (ITEST4x4_FLAT(threshE, threshF)) {
+            b[-s2] = FC_E1;
+            b[-s] = FC_E0;
+            b[0] = FC_I0;
         }
 
-        if (in_edge) {
-            i2 = bk[i - s2];
-            i1 = bk[i - s];
-            i0 = bk[i + 0];
-            e0 = bk[i + s];
-            e1 = bk[i + s2];
-            e2 = bk[i + s3];
-
-            avg = LPF;
-            if (ITEST4x4(threshM)) {
-                bk[i + 0] = FC_I0;
-                bk[i + s2] = FC_E1;
-                avg *= 5;
-                bk[i - s] = FC_I1;
-                bk[i + s] = FC_E0;
-            }
+        b = bk + i;
+        i2 = b[-s2];
+        i1 = b[-s];
+        i0 = b[0];
+        e0 = b[s];
+        e1 = b[s2];
+        e2 = b[s3];
+        avg = LPF;
+        if (ITEST4x4_FLAT(threshE, threshF)) {
+            b[0] = FC_I0;
+            b[s] = FC_E0;
+            b[s2] = FC_E1;
         }
     }
-}
-
-/* downsampled filter factor for a 4x4 block */
-static unsigned
-dsff4x4(uint8_t *a, int as)
-{
-    unsigned sh, sv;
-    int dsp0, dsp1, dsp2, dsp3;
-
-    /* create downsampled pixels */
-    dsp0 = ((a[0] + a[1] + a[as + 0] + a[as + 1] + 2) >> 2);
-    dsp1 = ((a[2] + a[3] + a[as + 2] + a[as + 3] + 2) >> 2);
-    a += 2 * as;
-    dsp2 = ((a[0] + a[1] + a[as + 0] + a[as + 1] + 2) >> 2);
-    dsp3 = ((a[2] + a[3] + a[as + 2] + a[as + 3] + 2) >> 2);
-
-    /* determine if the detail should be kept */
-    sh = abs((dsp0 + dsp1) - (dsp3 + dsp2));
-    sv = abs((dsp2 + dsp1) - (dsp3 + dsp0));
-    if (MAX(sh, sv) < 8) {
-        return 0;
-    }
-    /* find how much it should be smoothed, derived from 'haar' metric */
-    dsp2 = 255 - dsp2;
-    dsp3 = 255 - dsp3;
-    sh = abs(dsp0 - dsp1 + dsp2 - dsp3) >> 0;
-    sv = abs(dsp0 + dsp1 - dsp2 - dsp3) >> 2;
-    if (sh > sv) {
-        return (3 * sh + sv + 2) >> 2;
-    }
-    return (3 * sv + sh + 2) >> 2;
 }
 
 static void
 haar4x4(uint8_t *src, int as, int *psh, int *psv)
 {
     uint8_t *spA, *spB;
-    int x0, x1, x2, x3;
     int x, y;
-    int idx, HH, sh = 0, sv = 0;
+    int sh = 0, sv = 0;
 
+    spA = src;
+    spB = src + as;
+    as *= 2;
     for (y = 0; y < 4; y += 2) {
-        spA = src + (y + 0) * as;
-        spB = src + (y + 1) * as;
-        for (x = 0, idx = 0; x < 4; x += 2, idx++) {
+        for (x = 0; x < 4; x += 2) {
+            int s0, s1, d0, d1, HH;
+            int x0, x1, x2, x3;
+
             x0 = spA[x + 0];
             x1 = spA[x + 1];
             x2 = spB[x + 0];
             x3 = spB[x + 1];
 
-            HH = abs(x0 - x1 - x2 + x3) >> 1;
-            sh += abs(x0 - x1 + x2 - x3); /* LH */
-            sv += abs(x0 + x1 - x2 - x3); /* HL */
-            sh += HH; /* HH */
-            sv += HH; /* HH */
+            s0 = x0 + x1;
+            s1 = x2 + x3;
+            d0 = x0 - x1;
+            d1 = x2 - x3;
+
+            HH = (d0 - d1) / 2;
+
+            sh += d0 + d1 + HH; /* LH + HH */
+            sv += s0 - s1 + HH; /* HL + HH  */
         }
+        spA += as;
+        spB += as;
     }
     *psh = sh;
     *psv = sv;
 }
 
-static void
-artf4x4(uint8_t *a, int as, int *psh, int *psv, int *pslh, int *pslv)
-{
-    int dsp0, dsp1, dsp2, dsp3, HH;
-    haar4x4(a, as, psh, psv);
+#define MIN4(a, b, c, d) MIN(MIN(a, b), MIN(c, d))
+#define MAX4(a, b, c, d) MAX(MAX(a, b), MAX(c, d))
 
+static int
+ds4x4to2x2(uint8_t *a0, int as, int dsp[4])
+{
+    uint8_t *a1 = a0 + as;
     /* create downsampled pixels */
-    dsp0 = (a[0] + a[1] + a[as + 0] + a[as + 1] + 2) >> 2;
-    dsp1 = (a[2] + a[3] + a[as + 2] + a[as + 3] + 2) >> 2;
-    a += 2 * as;
-    dsp2 = (a[0] + a[1] + a[as + 0] + a[as + 1] + 2) >> 2;
-    dsp3 = (a[2] + a[3] + a[as + 2] + a[as + 3] + 2) >> 2;
+    dsp[0] = DSV_UAVG4(a0[0], a0[1], a1[0], a1[1]);
+    dsp[1] = DSV_UAVG4(a0[2], a0[3], a1[2], a1[3]);
+    a0 += 2 * as;
+    a1 += 2 * as;
+    dsp[2] = DSV_UAVG4(a0[0], a0[1], a1[0], a1[1]);
+    dsp[3] = DSV_UAVG4(a0[2], a0[3], a1[2], a1[3]);
 
-    *pslh = abs(dsp0 - dsp1 + dsp2 - dsp3);
-    *pslv = abs(dsp0 + dsp1 - dsp2 - dsp3);
-    HH = abs(dsp0 - dsp1 - dsp2 + dsp3) >> 1;
-    *pslh += HH;
-    *pslv += HH;
+    return 2 * (MAX4(dsp[0], dsp[1], dsp[2], dsp[3]) - MIN4(dsp[0], dsp[1], dsp[2], dsp[3]));
 }
 
-#define HISTBITS 4
-#define NHIST (1 << HISTBITS)
-
-/* de-gradient filter */
 static void
-degrad4x4(uint8_t *a, int as)
+haar2L(uint8_t *a, int as, int *psh, int *psv, int *pslh, int *pslv, int *span)
 {
-    uint8_t hist[NHIST];
-    uint16_t avgs[NHIST];
-    int x, y, lo, hi, alo, ahi, flo, fhi, t;
-    uint8_t *sp = a;
+    int dsp[4], HH;
 
-    memset(hist, 0, sizeof(hist));
-    memset(avgs, 0, sizeof(avgs));
-    /* generate histogram of quantized luma samples + averages of each bucket */
-    for (y = 0; y < 4; y++) {
-        for (x = 0; x < 4; x++) {
-            t = sp[x] >> (8 - HISTBITS);
-            hist[t]++;
-            avgs[t] += sp[x];
-        }
-        sp += as;
-    }
-    lo = -1;
-    hi = -1;
-    /* find darkest and brightest buckets of the histogram */
-    for (x = 0; x < NHIST; x++) {
-        if (hist[x]) {
-            if (lo == -1) {
-                lo = x;
-            }
-            hi = x;
-        }
-    }
-    /* ignore mostly flat blocks */
-    if (lo >= hi) {
-        return;
-    }
-    alo = avgs[lo] / hist[lo];
-    ahi = avgs[hi] / hist[hi];
-
-    if (alo == 0) {
-        alo = 1;
-    }
-    if (ahi == 0) {
-        ahi = 1;
-    }
-    flo = hist[lo];
-    fhi = hist[hi];
-    /* midpoint brightness of the block and the epsilon around the midpoint */
-    t = (alo + ahi + 1) >> 1;
-
-    sp = a;
-    for (y = 0; y < 4; y++) {
-        for (x = 0; x < 4; x++) {
-            int os = sp[x];
-            /* blend outliers with the low and high bucket averages */
-            if (os < t) {
-                sp[x] = os + ((flo * (alo - os)) / 16);
-            } else if (os > t) {
-                sp[x] = os + ((fhi * (ahi - os)) / 16);
-            }
-        }
-        sp += as;
-    }
-}
-
-
-extern void
-dsv_post_process(DSV_PLANE *dp)
-{
-    int i, j, x, y;
-    int nsbx, nsby;
-
-    nsbx = dp->w / FILTER_DIM;
-    nsby = dp->h / FILTER_DIM;
-    for (j = 0; j < nsby; j++) {
-        y = j * FILTER_DIM;
-        if ((y + FILTER_DIM) >= dp->h) {
-            continue;
-        }
-        for (i = 0; i < nsbx; i++) {
-            x = i * FILTER_DIM;
-            if ((x + FILTER_DIM) >= dp->w) {
-                continue;
-            }
-            degrad4x4(DSV_GET_XY(dp, x, y), dp->stride);
-        }
-    }
-}
-
-/* non-linearize texture */
-static int
-curve_tex(int tt)
-{
-    if (tt < 8) {
-        return (8 - tt) * 8;
-    }
-    if (tt > 192) {
-        return 0;
-    }
-    return (tt - (8 - 1));
-}
-
-static int
-compute_filter_q(DSV_PARAMS *p, int q)
-{
-    int psyf = dsv_spatial_psy_factor(p, -1);
-    if (q > 1536) {
-        q = 1536;
-    }
-    q += q * psyf >> (7 + 3);
-    if (q < 1024) {
-        q = 512 + q / 2;
-    }
-    return q;
+    haar4x4(a, as, psh, psv);
+    *span = ds4x4to2x2(a, as, dsp);
+    HH = (dsp[0] - dsp[1] - dsp[2] + dsp[3]) / 2;
+    *psh = abs(*psh);
+    *psv = abs(*psv);
+    *pslh = abs((dsp[0] - dsp[1] + dsp[2] - dsp[3]) + HH);
+    *pslv = abs((dsp[0] + dsp[1] - dsp[2] - dsp[3]) + HH);
 }
 
 extern void
@@ -392,7 +238,9 @@ dsv_intra_filter(int q, DSV_PARAMS *p, DSV_FMETA *fm, int c, DSV_PLANE *dp, int 
 {
     int i, j, x, y;
     int nsbx, nsby;
-    int fthresh;
+    int fthresh, lowt;
+    uint8_t *tcache = NULL;
+
     if (p->lossless) {
         return;
     }
@@ -404,256 +252,503 @@ dsv_intra_filter(int q, DSV_PARAMS *p, DSV_FMETA *fm, int c, DSV_PLANE *dp, int 
     }
     nsbx = dp->w / FILTER_DIM;
     nsby = dp->h / FILTER_DIM;
-    q = compute_filter_q(p, q);
-    fthresh = 32 * (14 - dsv_lb2(q));
+
+    tcache = dsv_alloc(nsbx * sizeof(*tcache));
+    if (tcache == NULL) {
+        DSV_ERROR(("out of memory"));
+    }
+    fthresh = q / 64;
+    if (q < 128) {
+        fthresh -= (128 - q) / 8;
+    }
+    fthresh = CLAMP(fthresh, 0, 24);
+    lowt = MIN((q >> 8), 16);
     for (j = 0; j < nsby; j++) {
-        int fy = (j * p->nblocks_v / nsby);
+        int fy = j / FILTER_DIM;
         y = j * FILTER_DIM;
-        if ((y + FILTER_DIM) >= dp->h) {
-            continue;
-        }
+
+        memset(tcache, 0, nsbx * sizeof(*tcache));
         for (i = 0; i < nsbx; i++) {
-            int fx = (i * p->nblocks_h / nsbx);
+            int fx = i / FILTER_DIM;
             int flags = fm->blockdata[fx + fy * p->nblocks_h];
-            int tt = 32;
 
             x = i * FILTER_DIM;
-            if ((x + FILTER_DIM) >= dp->w) {
-                continue;
-            }
-            if (do_filter && !(flags & DSV_IS_RINGING)) {
-                int sh, sv, shl, svl;
-                artf4x4(DSV_GET_XY(dp, x, y), dp->stride, &sh, &sv, &shl, &svl);
-                /* only filter blocks with significant texture */
-                if ((MAX(sh, sv) < 256 && MAX(sh, sv) > 8)) {
-                    if (flags & (DSV_IS_MAINTAIN | DSV_IS_STABLE)) {
-                        tt = dsff4x4(DSV_GET_XY(dp, x, y), dp->stride);
-                        if (flags & DSV_IS_STABLE) {
-                            tt = tt * 5 >> 2;
-                        }
+
+            if (!(flags & DSV_IS_RINGING)) {
+                int sh, sv, shl, svl, span;
+                int tt = 0, avg_energy;
+                haar2L(DSV_GET_XY(dp, x, y), dp->stride, &sh, &sv, &shl, &svl, &span);
+                avg_energy = DSV_UAVG4(sh, shl, sv, svl);
+
+                if ((span >> 1) < MAX(lowt, avg_energy)) {
+                    int tl = (shl + svl);
+                    int th = (sh + sv);
+
+                    int ad;
+                    if (th > (tl * 5 / 2) || ((tl <= (avg_energy + 1)) || (th <= (avg_energy + 1)))) {
+                        ad = 0;
+                    } else if (tl > (th * 5 / 2)) {
+                        ad = abs(tl - avg_energy);
                     } else {
-                        tt >>= 2;
+                        ad = MAX(lowt, avg_energy);
                     }
-                    tt = (tt * 2 / 3);
-                    tt = (tt * q) >> DSV_MAX_QP_BITS;
-                    tt = CLAMP(tt, 0, fthresh);
-                    ihfilter4x4(dp, x, y, 0, tt, tt);
-                    ivfilter4x4(dp, x, y, 0, tt, tt);
-                    if (sh > sv) {
-                        tt = (3 * sh + sv);
-                    } else {
-                        tt = (3 * sv + sh);
-                    }
-                    tt = curve_tex(tt);
-                    tt = 16 + ((tt + 2) >> 2);
-                    tt = (tt * q) >> DSV_MAX_QP_BITS;
-                    tt = CLAMP(tt, 0, fthresh);
-                    ihfilter4x4(dp, x, y, 0, tt, tt);
-                    ivfilter4x4(dp, x, y, 0, tt, tt);
+                    tt = MIN(ad, fthresh);
+                    tcache[i] = clamp_u8(tt);
+                    ihfilter4x4(dp, x, y, tcache[i], tcache[i]);
                 }
             }
+        }
+        for (i = 0; i < nsbx; i++) {
+            int fx = i / FILTER_DIM;
+            int flags = fm->blockdata[fx + fy * p->nblocks_h];
+
+            x = i * FILTER_DIM;
+
+            if (!(flags & DSV_IS_RINGING) && tcache[i]) {
+                ivfilter4x4(dp, x, y, tcache[i], tcache[i]);
+            }
+        }
+    }
+    dsv_free(tcache);
+}
+
+/* fast median of 9 values using network of 25 comparisons */
+static int
+median9(uint8_t *src, int x, int y, int stride)
+{
+    uint8_t v[9];
+
+    memcpy(v + 0, src + (x - 1) + (y - 1) * stride, 3 * sizeof(uint8_t));
+    memcpy(v + 3, src + (x - 1) + (y - 0) * stride, 3 * sizeof(uint8_t));
+    memcpy(v + 6, src + (x - 1) + (y + 1) * stride, 3 * sizeof(uint8_t));
+
+#define SORT2(a, b) do {\
+        if ((b) < (a)) {\
+            uint8_t t;  \
+            t = (a);    \
+            (a) = (b);  \
+            (b) = t;    \
+        }} while (0)
+
+    SORT2(v[0], v[3]);
+    SORT2(v[1], v[7]);
+    SORT2(v[2], v[5]);
+    SORT2(v[4], v[8]);
+    SORT2(v[0], v[7]);
+
+    SORT2(v[2], v[4]);
+    SORT2(v[3], v[8]);
+    SORT2(v[5], v[6]);
+    SORT2(v[0], v[2]);
+    SORT2(v[1], v[3]);
+
+    SORT2(v[4], v[5]);
+    SORT2(v[7], v[8]);
+    SORT2(v[1], v[4]);
+    SORT2(v[3], v[6]);
+    SORT2(v[5], v[7]);
+
+    SORT2(v[0], v[1]);
+    SORT2(v[2], v[4]);
+    SORT2(v[3], v[5]);
+    SORT2(v[6], v[8]);
+    SORT2(v[2], v[3]);
+
+    SORT2(v[4], v[5]);
+    SORT2(v[6], v[7]);
+    SORT2(v[1], v[2]);
+    SORT2(v[3], v[4]);
+    SORT2(v[5], v[6]);
+
+    return v[4];
+}
+
+static void
+filter_mc_err(uint8_t *src, int stride, int w, int h, int thresh)
+{
+    uint8_t tmp[(DSV_MAX_BLOCK_SIZE + 2) * (DSV_MAX_BLOCK_SIZE + 2)];
+    uint8_t *tmpp;
+    int src_w, src_h;
+    int x, y;
+
+    /* shouldn't happen but who knows... */
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    thresh = (48 - CLAMP(thresh, 0, 48));
+    if (thresh == 0) {
+        return;
+    }
+
+    src_w = w + 2;
+    src_h = h + 2;
+    tmpp = tmp + src_w + 1;
+
+    for (y = 0; y < src_h; y++) {
+        memcpy(tmp + y * src_w, src + (y - 1) * stride - 1, src_w);
+    }
+    /* this bad boy gets auto-vectorized (at least in clang) */
+    for (y = 0; y < h; y++) {
+        int top, cur, bot;
+
+        top = (y - 1) * src_w;
+        cur = (y + 0) * src_w;
+        bot = (y + 1) * src_w;
+
+        for (x = 0; x < w; x++) {
+            int c, l, r, u, d;
+            int lo, hi;
+            int str, med;
+
+            c = tmpp[cur + x];
+            l = tmpp[cur + x - 1];
+            r = tmpp[cur + x + 1];
+            u = tmpp[top + x];
+            d = tmpp[bot + x];
+
+            lo = MIN(l, r);
+            hi = MAX(l, r);
+
+            str = thresh;
+
+            if (c > lo && c < hi) {
+                lo = MIN(u, d);
+                hi = MAX(u, d);
+
+                if (c > lo && c < hi) {
+                    str >>= 1;
+                }
+            }
+            med = median9(tmpp, x, y, src_w);
+            src[y * stride + x] = clamp_u8(c + ((med - c) * str / 64));
         }
     }
 }
 
+#define EDGE_4x4        3
+#define EDGE_SUB        2
+#define EDGE_BLOCK      1
+#define EDGE_HALF_BIT   (1 << 2) /* 0 = left/top half, 1 = right/bottom half */
+
+static int
+classify_edge(int coord, int block_dim)
+{
+    if ((coord & (block_dim - 1)) == 0) {
+        /* on block boundary */
+        return EDGE_BLOCK;
+    }
+    if ((coord & ((block_dim / 2) - 1)) == 0) {
+        /* on subblock boundary AND NOT on block boundary */
+        return EDGE_SUB;
+    }
+    /* on 4x4 boundary AND NOT on block OR subblock boundary */
+    if ((coord & (block_dim - 1)) < (block_dim / 2)) {
+        return EDGE_4x4; /* left/top */
+    }
+    return EDGE_4x4 | EDGE_HALF_BIT; /* right/bottom */
+}
+
+static unsigned
+locate_subblock(int edgehh, int edgevv)
+{
+    switch (edgehh) {
+        case EDGE_BLOCK:
+        case EDGE_4x4:
+            return ((edgevv == EDGE_SUB || (edgevv & EDGE_HALF_BIT)) ? DSV_MASK_INTRA10 : DSV_MASK_INTRA00);
+        case EDGE_SUB:
+        case EDGE_4x4 | EDGE_HALF_BIT:
+            return ((edgevv == EDGE_SUB || (edgevv & EDGE_HALF_BIT)) ? DSV_MASK_INTRA11 : DSV_MASK_INTRA01);
+        default:
+            break;
+    }
+    DSV_ASSERT(0);
+    return 0;
+}
+
+#define F_BLOCK_UNALIGNED_W 1
+#define F_BLOCK_UNALIGNED_H 2
+#define F_BLOCK_BOTTOMMOST  4
+#define F_BLOCK_RIGHTMOST   8
+
+#define F_AUX_ND_MASK 0x1f /* mask to get neighbordif out of mv->aux */
+#define F_AUX_STR_H_SHIFT 10
+#define F_AUX_STR_V_SHIFT 8
+
 static void
-luma_filter(DSV_MV *vecs, int q, DSV_PARAMS *p, DSV_PLANE *dp, int do_filter)
+luma_filter(DSV_MV *vecs, int q, DSV_PARAMS *p, DSV_PLANE *dp)
 {
     int i, j, x, y;
     int nsbx, nsby;
-    int sharpen;
-#define NDCACHE_INVALID -1
-    /* x, y, neighbordif_x, neighbordif_y */
-    int cached[4] = { NDCACHE_INVALID, NDCACHE_INVALID, NDCACHE_INVALID, NDCACHE_INVALID };
-    int fthresh;
-
-    if (p->vidmeta->inter_sharpen) {
-        sharpen = p->temporal_mc; /* sharpen when the smoother half-pel filter was used */
-    } else {
-        sharpen = 0;
-    }
+    int fthreshE, fthreshF;
+    uint8_t *tcache = NULL;
+    int align_flags, pos_flags;
+    int psyf;
+    unsigned tq = (1 + DSV_MAX_QP) - q;
+    int logq = dsv_lb2(q);
+    int blkshift_h, blkshift_v;
     if (p->lossless) {
         return;
     }
     nsbx = dp->w / FILTER_DIM;
     nsby = dp->h / FILTER_DIM;
-    q = compute_filter_q(p, q);
-    fthresh = 32 * (14 - dsv_lb2(q));
-    for (j = 0; j < nsby; j++) {
-        int edgev, edgevs, fy;
+    blkshift_h = dsv_lb2(p->blk_w / FILTER_DIM);
+    blkshift_v = dsv_lb2(p->blk_h / FILTER_DIM);
+    align_flags = 0;
+    if (dp->w % p->blk_w) {
+        align_flags |= F_BLOCK_UNALIGNED_W;
+    }
+    if (dp->h % p->blk_h) {
+        align_flags |= F_BLOCK_UNALIGNED_H;
+    }
+    tcache = dsv_alloc(nsbx * sizeof(*tcache));
+    if (tcache == NULL) {
+        DSV_ERROR(("out of memory"));
+    }
+    psyf = dsv_spatial_psy_factor(p, -1);
+    psyf = dsv_lb2(psyf >> 4);
+    fthreshE = (tq << 19) / (3 * tq * tq);
+    fthreshF = 32 - (dsv_flb2(tq / 256) >> 3) / 6;
+    if (q < 128) {
+        fthreshE -= (128 - q) / 3;
+        fthreshF -= (128 - q) / 9;
+    }
+    fthreshE = CLAMP(fthreshE, 0, 0x7f);
+    fthreshF = CLAMP(fthreshF, 0, 0x7f);
+    for (j = 0; j < p->nblocks_v; j++) {
+        int errmvy = 0;
 
-        fy = (j * p->nblocks_v / nsby);
-        edgev = ((j * FILTER_DIM) % p->blk_h) == 0;
-        edgevs = ((j * FILTER_DIM) % (p->blk_h / 2)) == 0;
-        y = j * FILTER_DIM;
-        if ((y + FILTER_DIM) >= dp->h) {
-            continue;
+        pos_flags = align_flags;
+        if (j == (p->nblocks_v - 1)) {
+            pos_flags |= F_BLOCK_BOTTOMMOST;
         }
-        for (i = 0; i < nsbx; i++) {
-            int edgeh, edgehs, fx, ndx, ndy, amx, amy;
-            DSV_MV *mv;
-            uint8_t *dxy;
-
-            fx = (i * p->nblocks_h / nsbx);
-            edgeh = ((i * FILTER_DIM) % p->blk_w) == 0;
-            edgehs = ((i * FILTER_DIM) % (p->blk_w / 2)) == 0;
-            mv = &vecs[fx + fy * p->nblocks_h];
-
-            x = i * FILTER_DIM;
-
+        if ((pos_flags & (F_BLOCK_UNALIGNED_H | F_BLOCK_BOTTOMMOST)) == (F_BLOCK_UNALIGNED_H | F_BLOCK_BOTTOMMOST)) {
+            errmvy = -p->nblocks_h;
+        }
+        for (i = 0; i < p->nblocks_h; i++) {
+            DSV_MV *mv = &vecs[i + j * p->nblocks_h];
+            int nd, intra;
+            int errmvx = 0;
+            mv->aux = 0;
             if (DSV_MV_IS_SKIP(mv)) {
                 continue;
             }
-            if ((x + FILTER_DIM) >= dp->w) {
-                continue;
-            }
-
-            amx = abs(mv->u.mv.x);
-            amy = abs(mv->u.mv.y);
-
-            /* if current x,y is different than what was cached, update cache */
-            if (do_filter && (fx != cached[0] || fy != cached[1] || cached[2] == NDCACHE_INVALID || cached[3] == NDCACHE_INVALID)) {
-                dsv_neighbordif2(vecs, p, fx, fy, &ndx, &ndy);
-
-                cached[0] = fx;
-                cached[1] = fy;
-                cached[2] = ndx;
-                cached[3] = ndy;
-            } else {
-                /* use cached value */
-                ndx = cached[2];
-                ndy = cached[3];
-            }
-
-            dxy = DSV_GET_XY(dp, x, y);
-            if (DSV_MV_IS_INTRA(mv)) {
-                int intra_threshH = ((64 * q) >> DSV_MAX_QP_BITS);
-                int intra_threshL = ((32 * q) >> DSV_MAX_QP_BITS);
-                int intra = DSV_MV_IS_INTRA(mv);
-                int tedgeh = edgeh;
-                int tedgev = edgev;
-                intra_threshH = CLAMP(intra_threshH, 2, 32);
-                intra_threshL = CLAMP(intra_threshL, 2, 32);
-                if (intra && mv->submask != DSV_MASK_ALL_INTRA) {
-                    tedgeh |= edgehs;
-                    tedgev |= edgevs;
+            intra = DSV_MV_IS_INTRA(mv);
+            nd = dsv_neighbordif(vecs, p, i, j) >> psyf;
+            nd = dsv_lb2(CLAMP(nd, 0, 65535)) + p->vidmeta->filter_strength;
+            mv->aux = MAX(nd, 0);
+            if (i > 0) { /* left */
+                DSV_MV *leftmv = (mv - 1);
+                int str = 0;
+                if (intra || (leftmv->flags & ((1 << DSV_MV_BIT_INTRA) | (1 << DSV_MV_BIT_SKIP)))) {
+                    str++;
                 }
-                ihfilter4x4(dp, x, y, tedgeh, intra_threshH, intra_threshL);
-                ivfilter4x4(dp, x, y, tedgev, intra_threshH, intra_threshL);
-                continue;
+                if (DSV_IS_SUBPEL(leftmv)) {
+                    str++;
+                }
+                mv->aux |= str << F_AUX_STR_H_SHIFT;
             }
-            if (do_filter && (ndx || ndy)) {
-                int tt, addx, addy, sh, sv, shl, svl;
-                int intra = DSV_MV_IS_INTRA(mv);
-                int eprm = DSV_MV_IS_EPRM(mv);
-                int tedgeh = edgeh || eprm;
-                int tedgev = edgev || eprm;
-                int tndc;
-                if (intra && mv->submask != DSV_MASK_ALL_INTRA) {
-                    tedgeh |= edgehs;
-                    tedgev |= edgevs;
+            if (j > 0) { /* top */
+                DSV_MV *topmv = (mv - p->nblocks_h);
+                int str = 0;
+                if (intra || (topmv->flags & ((1 << DSV_MV_BIT_INTRA) | (1 << DSV_MV_BIT_SKIP)))) {
+                    str++;
                 }
-                tndc = (ndx + ndy + 1) >> 1;
-                artf4x4(dxy, dp->stride, &sh, &sv, &shl, &svl);
-
-                if (sh < 2 * sv && sv < 2 * sh) {
-                    int ix, iy;
-                    if (ndx < amx) {
-                        ndx >>= 1;
-                    }
-                    if (ndy < amy) {
-                        ndy >>= 1;
-                    }
-                    shl = (shl > 128) ? 0 : (128 - shl);
-                    svl = (svl > 128) ? 0 : (128 - svl);
-
-                    ix = MIN(amx, 32);
-                    iy = MIN(amy, 32);
-                    /* interpolate between lower freq and higher freq energies */
-                    tt  = ((sh * (32 - iy) + shl * iy) + 16) >> 5;
-                    tt += ((sv * (32 - ix) + svl * ix) + 16) >> 5;
-                    tt = (tt + 1) >> 1;
-                    if (ndx < amy && ndy < amx) { /* neighbordif not significant enough */
-                        tt = 0;
-                    }
-                } else {
-                    tt = (sh + sv + 1) >> 1;
+                if (DSV_IS_SUBPEL(topmv)) {
+                    str++;
                 }
-                tt = (tt * tndc + 4) >> 3;
-
-                tt = (MIN(tt, fthresh) * q) >> DSV_MAX_QP_BITS;
-                addx = (MIN(ndy, fthresh) * q) >> DSV_MAX_QP_BITS;
-                addy = (MIN(ndx, fthresh) * q) >> DSV_MAX_QP_BITS;
-
-                if (sh > 2 * sv || amy > 2 * amx) {
-                    ivfilter4x4(dp, x, y, tedgev, tt + addy, tt);
-                } else if (sv > 2 * sh || amx > 2 * amy) {
-                    ihfilter4x4(dp, x, y, tedgeh, tt + addx, tt);
-                } else {
-                    ihfilter4x4(dp, x, y, tedgeh, tt + addx, tt);
-                    ivfilter4x4(dp, x, y, tedgev, tt + addy, tt);
-                }
+                mv->aux |= str << F_AUX_STR_V_SHIFT;
             }
-            if (sharpen && DSV_IS_DIAG(mv) && DSV_IS_QPEL(mv) && amx < 8 && amy < 8) {
-                degrad4x4(dxy, dp->stride);
+            if (i == (p->nblocks_h - 1)) {
+                pos_flags |= F_BLOCK_RIGHTMOST;
+            }
+            /* mv error is unreliable on bottom/right edge blocks in frames whose width/height is not an exact multiple of the block's dimensions */
+            if ((pos_flags & (F_BLOCK_UNALIGNED_W | F_BLOCK_RIGHTMOST)) == (F_BLOCK_UNALIGNED_W | F_BLOCK_RIGHTMOST)) {
+                errmvx = -1;
+            }
+            mv->err[0] = clamp_u8(((mv + errmvx + errmvy)->err[0] << logq) >> 9);
+
+            x = i * p->blk_w;
+            y = j * p->blk_h;
+            if (mv->err[0]) {
+                filter_mc_err(DSV_GET_XY(dp, x, y), dp->stride, p->blk_w, p->blk_h, q / mv->err[0]);
             }
         }
     }
+    /* two horizontal passes to avoid step-like filtering artifacts */
+    for (j = 0; j < nsby; j++) {
+        DSV_MV *mvrow;
+        int edgevtype, fy;
+        fy = j >> blkshift_v;
+        y = j * FILTER_DIM;
+
+        edgevtype = classify_edge(y, p->blk_h);
+
+        mvrow = vecs + fy * p->nblocks_h;
+        for (i = 0; i < nsbx; i++) {
+            int edgehtype, fx, nd;
+            DSV_MV *mv;
+            int tt, ht = 0, vt = 0;
+
+            fx = i >> blkshift_h;
+            x = i * FILTER_DIM;
+            mv = mvrow + fx;
+            if (DSV_MV_IS_SKIP(mv)) {
+                continue;
+            }
+            edgehtype = classify_edge(x, p->blk_w);
+            nd = mv->aux & F_AUX_ND_MASK;
+
+            tt = mv->err[0];
+            if (DSV_MV_IS_INTRA(mv) && (mv->submask & locate_subblock(edgehtype, edgevtype))) {
+                tt += fthreshF;
+                tt = MIN(tt, fthreshE);
+                ht = tt;
+                vt = tt;
+            } else {
+                int edgeh, edgev;
+
+                edgeh = (edgehtype & ~EDGE_HALF_BIT) == EDGE_BLOCK;
+                edgev = (edgevtype & ~EDGE_HALF_BIT) == EDGE_BLOCK;
+
+                tt = (tt << nd) >> 4;
+                tt = MIN(tt, fthreshF);
+                ht = tt;
+                vt = tt;
+
+                if (edgeh || edgev) {
+                    int sh, sv, shl, svl, span;
+                    int strh, strv;
+                    strh = ((mv->aux >> F_AUX_STR_H_SHIFT) & 0x3);
+                    strv = ((mv->aux >> F_AUX_STR_V_SHIFT) & 0x3);
+
+                    haar2L(DSV_GET_XY(dp, x - 2, y - 2), dp->stride, &sh, &sv, &shl, &svl, &span);
+
+                    span *= 2;
+                    if (edgeh) {
+                        ht = ((abs(span - sh) + abs(span - shl) * 2) << (nd + strh)) >> 6;
+                        ht = MIN(ht, fthreshE);
+                    }
+                    if (edgev) {
+                        vt = ((abs(span - sv) + abs(span - svl) * 2) << (nd + strv)) >> 6;
+                        vt = MIN(vt, fthreshE);
+                    }
+                    if (sh > 2 * sv) {
+                        ht >>= 1;
+                    }
+                    if (sv > 2 * sh) {
+                        vt >>= 1;
+                    }
+                }
+            }
+            tcache[i] = vt;
+            ihfilter4x4(dp, x, y, ht, MIN(ht, fthreshF));
+        }
+        for (i = 0; i < nsbx; i++) {
+            DSV_MV *mv;
+            x = i * FILTER_DIM;
+            mv = mvrow + (i >> blkshift_h);
+            if (DSV_MV_IS_SKIP(mv)) {
+                continue;
+            }
+            ivfilter4x4(dp, x, y, tcache[i], MIN(tcache[i], fthreshF));
+        }
+    }
+    dsv_free(tcache);
 }
 
 static void
 chroma_filter(DSV_MV *vecs, int q, DSV_PARAMS *p, DSV_PLANE *dp)
 {
-    int i, j, x, y, bw, bh, sh, sv;
-    int intra_thresh;
-    DSV_MV *mv;
+    int i, j, x, y, sh, sv;
+    int nsbx, nsby;
+    int align_flags, pos_flags;
+    int fthresh;
+    unsigned tq = (1 + DSV_MAX_QP) - q;
+    int logq = dsv_lb2(q);
+    int blkshift_h, blkshift_v;
 
-    sh = DSV_FORMAT_H_SHIFT(p->vidmeta->subsamp);
-    sv = DSV_FORMAT_V_SHIFT(p->vidmeta->subsamp);
-
-    bw = p->blk_w >> sh;
-    bh = p->blk_h >> sv;
     if (p->lossless) {
         return;
     }
-    intra_thresh = ((64 * q) >> DSV_MAX_QP_BITS);
-    intra_thresh = CLAMP(intra_thresh, 2, 32);
+    nsbx = dp->w / FILTER_DIM;
+    nsby = dp->h / FILTER_DIM;
 
+    sh = DSV_FORMAT_H_SHIFT(p->vidmeta->subsamp);
+    sv = DSV_FORMAT_V_SHIFT(p->vidmeta->subsamp);
+    blkshift_h = dsv_lb2((p->blk_w >> sh) / FILTER_DIM);
+    blkshift_v = dsv_lb2((p->blk_h >> sv) / FILTER_DIM);
+    align_flags = 0;
+    if (dp->w % p->blk_w) {
+        align_flags |= F_BLOCK_UNALIGNED_W;
+    }
+    if (dp->h % p->blk_h) {
+        align_flags |= F_BLOCK_UNALIGNED_H;
+    }
+    fthresh = (tq << 19) / (3 * tq * tq);
+    if (q < 128) {
+        fthresh -= (128 - q) / 3;
+    }
+    fthresh = CLAMP(fthresh * 2, 0, 0x7f);
     for (j = 0; j < p->nblocks_v; j++) {
-        y = j * bh;
+        int errmvy = 0;
+
+        pos_flags = align_flags;
+        if (j == (p->nblocks_v - 1)) {
+            pos_flags |= F_BLOCK_BOTTOMMOST;
+        }
+        if ((pos_flags & (F_BLOCK_UNALIGNED_H | F_BLOCK_BOTTOMMOST)) == (F_BLOCK_UNALIGNED_H | F_BLOCK_BOTTOMMOST)) {
+            errmvy = -p->nblocks_h;
+        }
         for (i = 0; i < p->nblocks_h; i++) {
-            x = i * bw;
+            DSV_MV *mv, *emv;
+            int errmvx = 0;
+            int thr, nd;
             mv = &vecs[i + j * p->nblocks_h];
-
-            if (!DSV_MV_IS_SKIP(mv)) {
-                int z, tx = intra_thresh, ty = intra_thresh;
-                if (!DSV_MV_IS_INTRA(mv)) {
-                    int ndx, ndy, amx, amy;
-                    dsv_neighbordif2(vecs, p, i, j, &ndx, &ndy);
-                    amx = abs(mv->u.mv.x);
-                    amy = abs(mv->u.mv.y);
-                    if (ndx < amy && ndy < amx) { /* neighbordif not significant enough */
-                        tx = ty = 0;
-                    } else {
-                        tx = ndy;
-                        ty = ndx;
-                        tx = (MIN(tx, 64) * q) >> DSV_MAX_QP_BITS;
-                        ty = (MIN(ty, 64) * q) >> DSV_MAX_QP_BITS;
-                    }
-                }
-
-                /* only filtering top and left sides */
-                for (z = 0; z < bh; z += FILTER_DIM) {
-                    if ((y + z + FILTER_DIM) < dp->h) {
-                        ihfilter4x4(dp, x, y + z, 0, tx, tx);
-                    }
-                }
-                for (z = 0; z < bw; z += FILTER_DIM) {
-                    if ((x + z + FILTER_DIM) < dp->w) {
-                        ivfilter4x4(dp, x + z, y, 0, ty, ty);
-                    }
-                }
+            if (DSV_MV_IS_SKIP(mv)) {
+                continue;
             }
+            if (i == (p->nblocks_h - 1)) {
+                pos_flags |= F_BLOCK_RIGHTMOST;
+            }
+            /* mv error is unreliable on bottom/right edge blocks in frames whose width/height is not an exact multiple of the block's dimensions */
+            if ((pos_flags & (F_BLOCK_UNALIGNED_W | F_BLOCK_RIGHTMOST)) == (F_BLOCK_UNALIGNED_W | F_BLOCK_RIGHTMOST)) {
+                errmvx = -1;
+            }
+            emv = mv + errmvx + errmvy;
+            nd = mv->aux & F_AUX_ND_MASK;
+            thr = (((emv->err[1] << logq) >> 9) + 1) << nd;
+            mv->err[1] = MIN(thr, fthresh);
+            thr = (((emv->err[2] << logq) >> 9) + 1) << nd;
+            mv->err[2] = MIN(thr, fthresh);
+        }
+    }
+    /* two horizontal passes to avoid step-like filtering artifacts */
+    for (j = 0; j < nsby; j++) {
+        DSV_MV *mvrow;
+        int fy;
+        fy = j >> blkshift_v;
+        y = j * FILTER_DIM;
+
+        mvrow = vecs + fy * p->nblocks_h;
+        for (i = 0; i < nsbx; i++) {
+            DSV_MV *mv;
+            mv = mvrow + (i >> blkshift_h);
+            x = i * FILTER_DIM;
+            if (DSV_MV_IS_SKIP(mv)) {
+                continue;
+            }
+            ihfilter4x4(dp + 0, x, y, mv->err[1], mv->err[1] >> 2);
+            ihfilter4x4(dp + 1, x, y, mv->err[2], mv->err[2] >> 2);
+        }
+        for (i = 0; i < nsbx; i++) {
+            DSV_MV *mv;
+            mv = mvrow + (i >> blkshift_h);
+            x = i * FILTER_DIM;
+            if (DSV_MV_IS_SKIP(mv)) {
+                continue;
+            }
+            ivfilter4x4(dp + 0, x, y, mv->err[1], mv->err[1] >> 2);
+            ivfilter4x4(dp + 1, x, y, mv->err[2], mv->err[2] >> 2);
         }
     }
 }
@@ -664,7 +759,7 @@ luma_qp(uint8_t *dec, int ds,
         int bw, int bh,
         int dx, int dy, int tmc)
 {
-    static int16_t tbuf[(DSV_MAX_BLOCK_SIZE + 3) * DSV_MAX_BLOCK_SIZE];
+    int16_t tbuf[(DSV_MAX_BLOCK_SIZE + 3) * DSV_MAX_BLOCK_SIZE];
     int16_t *tmp;
     int x, y, a, b, c, d, f, large_mv, dqtx, dqty;
 #define BF_SHIFT  (DSV_HP_SHF + 1)
@@ -851,8 +946,8 @@ predict(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_FRAME *ref, DSV_PLANE *dp)
                 py = CLAMP(py, -DSV_FRAME_BORDER, limy);
 
                 if (mv->submask == DSV_MASK_ALL_INTRA) {
-                    if (c == 0 && mv->dc) { /* DC is only for luma */
-                        avgc = mv->dc;
+                    if (c == 0 && (mv->dc & DSV_SRC_DC_PRED)) { /* DC is only for luma */
+                        avgc = mv->dc & 0xff;
                     } else {
                         avgc = avgval(DSV_GET_XY(rp, px, py), rp->stride, bw, bh);
                     }
@@ -878,8 +973,8 @@ predict(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_FRAME *ref, DSV_PLANE *dp)
                             sbx = x + f;
                             sby = y + g;
                             if (mv->submask & masks[mask_index]) {
-                                if (c == 0 && mv->dc) { /* DC is only for luma */
-                                    avgc = mv->dc;
+                                if (c == 0 && (mv->dc & DSV_SRC_DC_PRED)) { /* DC is only for luma */
+                                    avgc = mv->dc & 0xff;
                                 } else {
                                     avgc = avgval(DSV_GET_XY(rp, px + f, py + g), rp->stride, sbw, sbh);
                                 }
@@ -925,7 +1020,7 @@ predict(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_FRAME *ref, DSV_PLANE *dp)
 static void
 reconstruct(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_PLANE *resp, DSV_PLANE *predp, DSV_PLANE *outp)
 {
-    int i, j, x, y, bw, bh, sh, sv;
+    int i, j, x, y, bw, bh, areashift, sh, sv;
     DSV_MV *mv;
 
     if (c == 0) {
@@ -937,6 +1032,7 @@ reconstruct(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_PLANE *resp, DSV_PLANE *pred
     }
     bw = p->blk_w >> sh;
     bh = p->blk_h >> sv;
+    areashift = dsv_lb2(bw * bh);
 
     for (j = 0; j < p->nblocks_v; j++) {
         y = j * bh;
@@ -962,24 +1058,32 @@ reconstruct(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_PLANE *resp, DSV_PLANE *pred
             } else {
                 /* D.4 Reconstruction */
                 if (!DSV_MV_IS_EPRM(mv) || (!DSV_MV_IS_INTRA(mv) && DSV_MV_IS_SKIP(mv))) {
+                    unsigned lerr = 0;
                     for (n = 0; n < bh; n++) {
                         for (m = 0; m < bw; m++) {
+                            int true_resid = res[m] - 128;
+                            lerr += abs(true_resid);
                             /* source = (prediction + residual) */
-                            out[m] = clamp_u8(pred[m] + res[m] - 128);
+                            out[m] = clamp_u8(pred[m] + true_resid);
                         }
                         pred += predp->stride;
                         res += resp->stride;
                         out += outp->stride;
                     }
+                    mv->err[c] = lerr >> areashift;
                 } else {
+                    unsigned lerr = 0;
                     for (n = 0; n < bh; n++) {
                         for (m = 0; m < bw; m++) {
-                            out[m] = clamp_u8(pred[m] + (res[m] - 128) * 2);
+                            int true_resid = 2 * (res[m] - 128);
+                            lerr += abs(true_resid);
+                            out[m] = clamp_u8(pred[m] + true_resid);
                         }
                         pred += predp->stride;
                         res += resp->stride;
                         out += outp->stride;
                     }
+                    mv->err[c] = lerr >> areashift;
                 }
             }
         }
@@ -1068,6 +1172,7 @@ dsv_sub_pred(DSV_MV *mv, DSV_PARAMS *p, DSV_FRAME *pred, DSV_FRAME *resd, DSV_FR
         subtract(mv, p, c, rp, pp);
     }
 }
+
 /* called by encoder */
 extern void
 dsv_add_res(DSV_MV *mv, DSV_FMETA *fm, int q, DSV_FRAME *resd, DSV_FRAME *pred, int do_filter)
@@ -1080,14 +1185,13 @@ dsv_add_res(DSV_MV *mv, DSV_FMETA *fm, int q, DSV_FRAME *resd, DSV_FRAME *pred, 
         rp = resd->planes + c;
 
         reconstruct(mv, fm->params, c, rp, pp, rp);
-        if (c == 0) {
-            luma_filter(mv, q, fm->params, rp, do_filter);
-        } else {
-            chroma_filter(mv, q, fm->params, rp);
-        }
+    }
+    if (do_filter) {
+        dsv_extend_frame(resd);
+        luma_filter(mv, q, fm->params, resd->planes + 0);
+        chroma_filter(mv, q, fm->params, resd->planes + 1);
     }
 }
-
 
 /* called by decoder */
 extern void
@@ -1102,10 +1206,10 @@ dsv_add_pred(DSV_MV *mv, DSV_FMETA *fm, int q, DSV_FRAME *resd, DSV_FRAME *out, 
 
         predict(mv, fm->params, c, ref, op); /* make prediction onto temp frame (out) */
         reconstruct(mv, fm->params, c, rp, op, op);
-        if (c == 0) {
-            luma_filter(mv, q, fm->params, op, do_filter);
-        } else {
-            chroma_filter(mv, q, fm->params, op);
-        }
+    }
+    if (do_filter) {
+        dsv_extend_frame(out);
+        luma_filter(mv, q, fm->params, out->planes + 0);
+        chroma_filter(mv, q, fm->params, out->planes + 1);
     }
 }

@@ -1,7 +1,7 @@
 # Digital-Subband-Video-2
 ------
 
-<h2 align="center">As of June 20, 2025 the DSV2 bitstream is frozen (v2.8)</h1>
+<h2 align="center">As of August 29, 2026 the DSV2 bitstream is frozen (v2.8)</h1>
 <p align="center">
 <img width="300" height="300" src="https://github.com/user-attachments/assets/ec4022d6-c60a-408f-979e-5845086f553a">
 </p>
@@ -239,7 +239,7 @@ x264 (encoded via ffmpeg with `-c:v libx264 -preset superfast -crf 29.8 -refs 1 
 https://github.com/user-attachments/assets/a59c4027-4d6e-4b82-929b-4e344ca931d8
 
 DSV2:
-(Note this video here had to be re-encoded to fit under 10MB. I re-encoded with x264 CRF 22.5 with the veryslow preset)
+(Note this video here had to be re-encoded to fit under 10MB. I re-encoded with x264 CRF 22 with the veryslow preset)
 
 
 https://github.com/user-attachments/assets/66f91774-be8b-4c94-8cce-68e27f98c5c8

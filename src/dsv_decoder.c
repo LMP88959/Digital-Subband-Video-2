@@ -4,7 +4,7 @@
  *   DSV-2
  *
  *     -
- *    =--  2024-2025 EMMIR
+ *    =--  2024-2026 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -48,10 +48,11 @@ decode_packet_hdr(DSV_BS *bs)
 }
 
 /* B.2.1 Metadata Packet */
-static void
+static int
 decode_meta(DSV_DECODER *d, DSV_BS *bs)
 {
     DSV_META *fmt = &d->vidmeta;
+    int w, h;
 
     fmt->width = dsv_bs_get_ueg(bs);
     fmt->height = dsv_bs_get_ueg(bs);
@@ -68,13 +69,45 @@ decode_meta(DSV_DECODER *d, DSV_BS *bs)
     fmt->aspect_den = dsv_bs_get_ueg(bs);
     DSV_DEBUG(("aspect ratio %d/%d", fmt->aspect_num, fmt->aspect_den));
 
-    fmt->inter_sharpen = dsv_bs_get_ueg(bs);
-    DSV_DEBUG(("inter sharpen %d", fmt->inter_sharpen));
+    fmt->filter_strength = dsv_bs_get_ueg(bs);
+    fmt->filter_strength = DSV_U2S(fmt->filter_strength);
+    DSV_DEBUG(("filter strength %d", fmt->filter_strength));
     if (dsv_bs_get_bit(bs)) {
         fmt->reserved = dsv_bs_get_bits(bs, 15);
+        if (fmt->reserved & DSV_META_COLORSPACE_BIT) {
+            fmt->colorspace = dsv_bs_get_bits(bs, 4);
+            fmt->colorspace |= dsv_bs_get_bit(bs) * DSV_COLORSPACE_FULLRANGE;
+            DSV_DEBUG(("colorspace %d", fmt->colorspace));
+            DSV_DEBUG(("fullrange %d", !!(fmt->colorspace & DSV_COLORSPACE_FULLRANGE)));
+        } else {
+            fmt->colorspace = DSV_COLORSPACE_BT601;
+        }
     } else {
         fmt->reserved = 0;
     }
+    /* validation */
+    w = fmt->width;
+    h = fmt->height;
+    if (w <= 0 || h <= 0) {
+        DSV_ERROR(("given dimensions were strange: %dx%d", w, h));
+        return 0;
+    }
+    if (w < 64 || h < 64) {
+        DSV_ERROR(("DSV2 does not support dimensions < 64: %dx%d", w, h));
+        return 0;
+    }
+    if ((w & 1) || (h & 1)) {
+        DSV_ERROR(("DSV2 does not support odd dimensions: %dx%d", w, h));
+        return 0;
+    }
+    if ((w * h) >= (4096 * 4096)) {
+        DSV_WARNING(("video dimensions %dx%d exceed what DSV2 is designed to handle, expect decoding issues!", w, h));
+    }
+    if (fmt->filter_strength < DSV_MIN_FILTER_STR || fmt->filter_strength > DSV_MAX_FILTER_STR) {
+        /* a bit more serious than the dimensions being large */
+        DSV_ERROR(("filter strength was strange: %d, expect decoding issues!.", fmt->filter_strength));
+    }
+    return 1;
 }
 
 /* B.2.3.4 Motion Data */
@@ -160,10 +193,6 @@ decode_motion(DSV_IMAGE *img, DSV_MV *mvs, DSV_BS *inbs, DSV_BUF *buf, int *stat
                     }
                     img->blockdata[idx] |= DSV_IS_INTRA;
                 }
-                if (dsv_neighbordif(mvs, params, i, j) > DSV_NDIF_THRESH) {
-                    img->blockdata[idx] |= (1 << DSV_STABLE_BIT);
-                }
-
             }
         }
     }
@@ -306,6 +335,7 @@ draw_info(DSV_IMAGE *img, DSV_FRAME *dst, DSV_MV *mvs, int mode, int isP)
                 a = x + bw / 2;
                 b = y + bh / 2;
                 if (img->blockdata[i + j * p->nblocks_h] & (DSV_IS_SKIP | DSV_IS_STABLE)) {
+                    /* horizontal line */
                     for (k = -bw / 4; k <= bw / 4; k++) {
                         if (b >= 0 && b < lp->h && a + k >= 0 && a + k < lp->w) {
                             *DSV_GET_XY(lp, a + k, b) = (k & 1) * 255;
@@ -313,10 +343,17 @@ draw_info(DSV_IMAGE *img, DSV_FRAME *dst, DSV_MV *mvs, int mode, int isP)
                     }
                 }
                 if (img->blockdata[i + j * p->nblocks_h] & DSV_IS_MAINTAIN) {
+                    /* vertical line */
                     for (k = -bh / 4; k <= bh / 4; k++) {
                         if (b + k >= 0 && b + k < lp->h && a >= 0 && a < lp->w) {
                             *DSV_GET_XY(lp, a, b + k) = (k & 1) * 255;
                         }
+                    }
+                }
+                if (!isP) {
+                    if (img->blockdata[i + j * p->nblocks_h] & DSV_IS_RINGING) {
+                        /* diagonal line */
+                        drawvec(lp, x - bw / 2, y - bh / 2, bw, bh, bw, bh);
                     }
                 }
             }
@@ -324,6 +361,9 @@ draw_info(DSV_IMAGE *img, DSV_FRAME *dst, DSV_MV *mvs, int mode, int isP)
                 drawvec(lp, x, y, mv->u.mv.x, mv->u.mv.y, bw, bh);
             }
             if (mv && isP && (mode & DSV_DRAW_IBLOCK)) {
+                if (mode == DSV_DRAW_IBLOCK && mv->submask) {
+                    drawvec(lp, x, y, mv->u.mv.x, mv->u.mv.y, bw, bh);
+                }
                 if (mv->submask & DSV_MASK_INTRA00) {
                     a = x + bw * 1 / 4;
                     b = y + bh * 1 / 4;
@@ -372,10 +412,20 @@ img_unref(DSV_IMAGE *img)
 }
 
 extern void
+dsv_dec_init(DSV_DECODER *d)
+{
+    memset(d, 0, sizeof(*d));
+}
+
+extern void
 dsv_dec_free(DSV_DECODER *d)
 {
     if (d->ref) {
         img_unref(d->ref);
+    }
+    if (d->transform_buf) {
+        dsv_free(d->transform_buf);
+        d->transform_buf = NULL;
     }
 }
 
@@ -404,6 +454,7 @@ dsv_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
     DSV_FMETA fm;
     int stats[DSV_MAX_STAT];
     DSV_COEFS coefs[3];
+    unsigned xf_buf_sz;
 
     *fn = -1;
 
@@ -420,9 +471,12 @@ dsv_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
         switch (pkt_type) {
             case DSV_PT_META:
                 DSV_DEBUG(("decoding metadata"));
-                decode_meta(d, &bs);
-                d->got_metadata = 1;
-                ret = DSV_DEC_GOT_META;
+                if (decode_meta(d, &bs)) {
+                    d->got_metadata = 1;
+                    ret = DSV_DEC_GOT_META;
+                } else {
+                    ret = DSV_DEC_ERROR;
+                }
                 break;
             case DSV_PT_EOS:
                 DSV_DEBUG(("decoding end of stream"));
@@ -508,6 +562,22 @@ dsv_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
     fm.blockdata = img->blockdata;
     fm.isP = p->has_ref;
     fm.fnum = fno;
+
+    /* (re)allocate if image is larger than what we currently have allocated */
+    xf_buf_sz = ((meta->width + 2) * (meta->height + 2)) + MAX(meta->width, meta->height);
+    if (d->transform_buf_sz < xf_buf_sz) {
+        d->transform_buf_sz = xf_buf_sz;
+        if (d->transform_buf) {
+            dsv_free(d->transform_buf);
+            d->transform_buf = NULL;
+        }
+        d->transform_buf = dsv_alloc(d->transform_buf_sz * sizeof(DSV_SBC));
+        if (d->transform_buf == NULL) {
+            DSV_ERROR(("out of memory"));
+        }
+    }
+    fm.transform_buf = d->transform_buf;
+
     /* B.2.3.5 Image Data - Plane Decoding */
     dsv_mk_coefs(coefs, subsamp, meta->width, meta->height);
 

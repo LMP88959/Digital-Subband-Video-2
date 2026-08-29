@@ -4,7 +4,7 @@
  *   DSV-2
  *
  *     -
- *    =--  2024-2025 EMMIR
+ *    =--  2024-2026 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -161,13 +161,13 @@ dsv_bs_get_ueg(DSV_BS *bs)
 static unsigned
 s2u(int v)
 {
-    return (2 * v) ^ (v < 0 ? ~0 : 0);
+    return DSV_S2U(v);
 }
 
 static int
 u2s(unsigned uv)
 {
-    return (uv >> 1) ^ (-(uv & 1));
+    return DSV_U2S(uv);
 }
 
 /* B. Encoding Type: signed interleaved exp-Golomb code (SEG) */
@@ -232,53 +232,67 @@ dsv_bs_get_neg(DSV_BS *bs)
     return v;
 }
 
+static unsigned
+local_update_rice_k(unsigned avg)
+{
+    unsigned k = 0;
+    avg >>= 3;
+    while (avg >>= 1) {
+        k++;
+    }
+    return k;
+}
+
+static unsigned
+local_update_rice_state(unsigned ravg, unsigned v)
+{
+    return ravg - (ravg >> 3) + v;
+}
+
 /* B. Encoding Type: adaptive Rice code (URC) */
 extern void
-dsv_bs_put_rice(DSV_BS *bs, unsigned v, int *rk, int damp)
+dsv_bs_put_rice(DSV_BS *bs, unsigned v, unsigned *rk, unsigned *avg)
 {
     unsigned k, q;
 
-    k = (*rk) >> damp;
+    k = (*rk);
     q = v >> k;
-    if (q) {
-        (*rk)++;
-    } else if ((*rk) > 0) {
-        (*rk)--;
-    }
     bs->pos += q; /* equivalent to putting 'q' zeroes, assuming buffer was clear */
     local_put_one(bs);
     local_put_bits(bs, k, v);
+
+    *avg = local_update_rice_state(*avg, v);
+    *rk = local_update_rice_k(*avg);
 }
 
 /* B. Encoding Type: adaptive Rice code (URC) */
 extern unsigned
-dsv_bs_get_rice(DSV_BS *bs, int *rk, int damp)
+dsv_bs_get_rice(DSV_BS *bs, unsigned *rk, unsigned *avg)
 {
-    int k = (*rk) >> damp;
-    unsigned q = 0;
+    int k = (*rk);
+    unsigned q = 0, v;
     while (!local_get_bit(bs)) {
         q++;
     }
-    if (q) {
-        (*rk)++;
-    } else if ((*rk) > 0) {
-        (*rk)--;
-    }
-    return (q << k) | dsv_bs_get_bits(bs, k);
+    v = (q << k) | dsv_bs_get_bits(bs, k);
+
+    *avg = local_update_rice_state(*avg, v);
+    *rk = local_update_rice_k(*avg);
+    return v;
 }
 
 /* B. Encoding Type: non-zero adaptive Rice code (NRC) */
 extern void
-dsv_bs_put_nrice(DSV_BS *bs, int v, int *rk, int damp)
+dsv_bs_put_nrice(DSV_BS *bs, int v, unsigned *rk, unsigned *avg)
 {
-    dsv_bs_put_rice(bs, s2u(v) - 1, rk, damp);
+    dsv_bs_put_rice(bs, s2u(v) - 1, rk, avg);
 }
 
 /* B. Encoding Type: non-zero adaptive Rice code (NRC) */
 extern int
-dsv_bs_get_nrice(DSV_BS *bs, int *rk, int damp)
+dsv_bs_get_nrice(DSV_BS *bs, unsigned *rk, unsigned *avg)
 {
-    return u2s(dsv_bs_get_rice(bs, rk, damp) + 1);
+    return u2s(dsv_bs_get_rice(bs, rk, avg) + 1);
 }
 
 /* B. Encoding Format: Zero Bit Run-Length Encoding (ZBRLE) */
