@@ -30,7 +30,8 @@ DSV2:
 
 
 
-https://github.com/user-attachments/assets/379beb83-b0ff-4349-a93b-a0b16b72e85c
+
+https://github.com/user-attachments/assets/37283f25-4ca7-4587-aee6-5b619301b8d0
 
 
 
@@ -197,7 +198,8 @@ DSV2:
 
 
 
-https://github.com/user-attachments/assets/b0975e1d-74f9-4322-bbeb-0edbd81bba39
+
+https://github.com/user-attachments/assets/fb0b414c-4ff1-4ab6-a823-e205f358f09e
 
 
 
@@ -219,7 +221,9 @@ DSV2:
 
 
 
-https://github.com/user-attachments/assets/fa2861d8-4e50-47fb-b523-41ac7ee1dd5b
+
+https://github.com/user-attachments/assets/0f66f580-60f9-4d54-b19a-c8dc9a9cbf1d
+
 
 
 
@@ -242,5 +246,8 @@ DSV2:
 (Note this video here had to be re-encoded to fit under 10MB. I re-encoded with x264 CRF 22 with the veryslow preset)
 
 
-https://github.com/user-attachments/assets/66f91774-be8b-4c94-8cce-68e27f98c5c8
+
+
+https://github.com/user-attachments/assets/1d97509c-e643-4443-96f9-b50f4cc20e7c
+
 
