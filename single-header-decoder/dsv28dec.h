@@ -4,7 +4,7 @@
  *   DSV-2
  *
  *     -
- *    =--  2024-2025 EMMIR
+ *    =--  2024-2026 EMMIR
  *   ==---  Envel Graphics
  *  ===----
  *
@@ -14,7 +14,7 @@
  */
 /*****************************************************************************/
 /*
- * This software was designed and written by EMMIR, 2024-2025 of Envel Graphics
+ * This software was designed and written by EMMIR, 2024-2026 of Envel Graphics
  * If you release anything with it, a comment in your code/README saying
  * where you got this code would be a nice gesture but it’s not mandatory.
  *
@@ -87,7 +87,7 @@ extern "C" {
  * The best reference is the d28_dec_main.c program,
  * but a quick synopsis via pseudocode is given here:
  *
- * zero DSV_DECODER struct memory
+ * d28_dec_init
  *
  * while (1) {
  *    DSV_FRAME *frame;
@@ -175,13 +175,33 @@ typedef struct {
     int aspect_num;
     int aspect_den;
 
-    int inter_sharpen;
+#define DSV_MIN_FILTER_STR -3
+#define DSV_DEF_FILTER_STR  0
+#define DSV_MAX_FILTER_STR  3
+    int filter_strength;
 
     /* 16 bits: reserved for potential future use
      * 1st bit: 0 = no reserved bits, 1 = has reserved bits
-     * last 15 bits: reserved bits
+     * next 15 bits: reserved bits
      */
+#define DSV_META_COLORSPACE_BIT (1 << 0)
+/* rest of bits currently undefined */
     int reserved;
+#define DSV_COLORSPACE_UNDEF      0 /* undefined */
+#define DSV_COLORSPACE_BT601      1
+#define DSV_COLORSPACE_BT709      2
+#define DSV_COLORSPACE_BT2020     3
+#define DSV_COLORSPACE_BT470      4
+#define DSV_COLORSPACE_BC2        5
+#define DSV_COLORSPACE_RESERVED_0 6
+#define DSV_COLORSPACE_RESERVED_1 7
+#define DSV_COLORSPACE_RESERVED_2 8
+#define DSV_COLORSPACE_RESERVED_3 9
+#define DSV_COLORSPACE_RESERVED_4 10
+#define DSV_COLORSPACE_RESERVED_5 11
+
+#define DSV_COLORSPACE_FULLRANGE (1 << 4)
+    int colorspace;
 } DSV_META;
 
 typedef struct {
@@ -239,10 +259,17 @@ typedef struct {
     int refcount;
 } DSV_IMAGE;
 
+/* subband coefs */
+typedef int32_t DSV_SBC;
+
 typedef struct {
     DSV_META vidmeta;
     DSV_IMAGE *ref;
+    unsigned transform_buf_sz;
+    DSV_SBC *transform_buf;
+
     int got_metadata;
+    int quant;
 } DSV_DECODER;
 
 typedef struct {
@@ -254,7 +281,6 @@ typedef struct {
 #define DSV_DEC_ERROR     1
 #define DSV_DEC_EOS       2
 #define DSV_DEC_GOT_META  3
-#define DSV_DEC_NEED_NEXT 4
 
 #define DSV_PKT_ERR_EOF -1
 #define DSV_PKT_ERR_OOB -2 /* out of bytes */
@@ -270,6 +296,7 @@ extern int d28_dec(DSV_DECODER *d, DSV_BUF *buf, DSV_FRAME **out, DSV_FNUM *fn);
  * yet, the returned struct will not contain any useful values. */
 extern DSV_META *d28_get_metadata(DSV_DECODER *d);
 
+extern void d28_dec_init(DSV_DECODER *d);
 /* free anything the decoder was holding on to */
 extern void d28_dec_free(DSV_DECODER *d);
 
@@ -294,7 +321,7 @@ extern int d28_yuv_write(FILE *out, int fno, DSV_PLANE *p);
 extern int d28_yuv_write_seq(FILE *out, DSV_PLANE *p);
 #endif
 
-extern void *d28_alloc(int size);
+extern void *d28_alloc(int32_t size);
 extern void d28_free(void *ptr);
 
 extern void d28_memory_report(void);
@@ -311,7 +338,7 @@ extern char *d28_lvlname[DSV_LEVEL_DEBUG + 1];
 #define DSV_LOG_LVL(level, x) \
     do { if (level <= d28_get_log_level()) { \
       printf("[DSV][%s] ", d28_lvlname[level]); \
-      printf("%s: %s(%d): ", __FILE__,  __FUNCTION__, __LINE__); \
+      printf("%s(%d): ",  __FUNCTION__, __LINE__); \
       printf x; \
       printf("\n"); \
     }} while(0)
@@ -368,10 +395,15 @@ extern int d28_get_log_level(void);
 #define DSV_ROUND_POW2(x, pwr) (((x) + (1 << (pwr)) - 1) & ((unsigned)(~0) << (pwr)))
 #define DSV_UDIV_ROUND_UP(a,b) (((a) + (b) - 1) / (b))
 #define DSV_UDIV_ROUND(a,b) (((a) + ((b) / 2)) / (b))
+#define DSV_UAVG4(a, b, c, d) ((unsigned) ((a) + (b) + (c) + (d) + 2) >> 2)
+#define DSV_SIGNOF(x) (((x) > 0) - ((x) < 0))
+
+#define DSV_S2U(v) ((unsigned) ((2 * (v)) ^ ((v) < 0 ? ~0 : 0)))
+#define DSV_U2S(v) (((unsigned) (v) >> 1) ^ (-((unsigned) (v) & 1)))
 
 /* portable sar - shift arithmetic right, or floordiv_pow2 */
 #if DSV_PORTABLE
-#define DSV_SAR(v, s) ((v) < 0 ? ~(~(v) >> (s)) : (v) >> (s))
+#define DSV_SAR(v, s) ((-2 >> 1 == -1) ? ((int32_t) (v)) >> (s) : ((int32_t) (v)) / (1 << (s)))
 #else
 #define DSV_SAR(v, s) ((v) >> (s))
 #endif
@@ -399,15 +431,11 @@ extern int d28_get_log_level(void);
 #define DSV_FORMAT_H_SHIFT(format) (((format) >> 2) & 0x3)
 #define DSV_FORMAT_V_SHIFT(format) ((format) & 0x3)
 
-/* subband coefs */
-typedef int32_t DSV_SBC;
 typedef struct {
     DSV_SBC *data;
     int width;
     int height;
 } DSV_COEFS;
-
-#define DSV_NDIF_THRESH   (2 * 4)
 
 #define DSV_STABLE_STAT   0
 #define DSV_MAINTAIN_STAT 1
@@ -458,11 +486,11 @@ typedef struct {
 #define DSV_MV_SET_MAINTAIN(mv, b)  (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_MAINTAIN, b))
 #define DSV_MV_SET_SKIP(mv, b)      (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_SKIP, b))
 #define DSV_MV_SET_RINGING(mv, b)   (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_RINGING, b))
-
     uint32_t flags;
-    uint16_t err;
 #define DSV_SRC_DC_PRED 0x100
     uint16_t dc;
+    uint16_t aux; /* stores auxiliary data for optimizing in-loop filtering */
+    uint8_t err[3];
     uint8_t submask;
 } DSV_MV;
 
@@ -478,7 +506,10 @@ typedef struct {
 
 typedef struct {
     DSV_PARAMS *params;
+    DSV_MV *mvs;
+    DSV_SBC *transform_buf; /* to store subband coefficients temporarily */
     uint8_t *blockdata; /* block bitmasks for adaptive things */
+    uint8_t *sb_facs; /* subblock factors for AQ */
     uint8_t cur_plane;
     uint8_t isP; /* is P frame */
     DSV_FNUM fnum;
@@ -522,16 +553,14 @@ typedef struct {
 #define DSV_HP_SHF 5                          /* normalization shift */
 #define DSV_HP_ADD (1 << (DSV_HP_SHF - 1))    /* rounding addition */
 
-/* half-pixel filter used for motion estimation */
-#define DSV_HPF_ME(a,b,c,d) ((5*((b)+(c)))-(((a)+(d))))
-#define DSV_ME_HP_SHF 3
-#define DSV_ME_HP_ADD (1 << (DSV_ME_HP_SHF - 1))
-
 #define DSV_MAX_QP_BITS 12
 #define DSV_MAX_QP ((1 << DSV_MAX_QP_BITS) - 1)
 
 /* C.2 fixed point precision for determining what block a pixel lies in */
 #define DSV_BLOCK_INTERP_P      14
+
+#define DSV_MINQP    3
+#define DSV_MINQUANT (1 << DSV_MINQP)  /* C.2 MINQUANT */
 
 /*********************************** GENERAL **********************************/
 
@@ -569,12 +598,37 @@ static unsigned allocated_bytes = 0;
 static unsigned freed_bytes = 0;
 static unsigned peak_alloc = 0;
 
+#define DSV_ALIGNMENT 64
+
+static void *
+d28_aligned_calloc(int32_t size)
+{
+    uint8_t *a = NULL;
+    uint8_t *b = DSV2_ALLOC_FUNC(size + (DSV_ALIGNMENT - 1) + sizeof(void**));
+    if (!b) {
+        DSV_ERROR(("failed to allocate memory"));
+        return NULL;
+    }
+    a = b + (DSV_ALIGNMENT - 1) + sizeof(void**);
+    a -= (intptr_t) a & (DSV_ALIGNMENT - 1);
+    memcpy((void*) ((char *) a - sizeof(void*)), &b, sizeof(void*));
+    return a;
+}
+
+static void
+d28_aligned_free(void *p)
+{
+    void *ptr;
+    memcpy(&ptr, (void*) ((char*) p - sizeof(void*)), sizeof(void*));
+    DSV2_FREE_FUNC(ptr);
+}
+
 extern void *
-d28_alloc(int size)
+d28_alloc(int32_t size)
 {
     void *p;
 
-    p = DSV2_ALLOC_FUNC(size + 16);
+    p = d28_aligned_calloc(size + DSV_ALIGNMENT);
     if (!p) {
         return NULL;
     }
@@ -584,20 +638,28 @@ d28_alloc(int size)
     if (peak_alloc < (allocated_bytes - freed_bytes)) {
         peak_alloc = (allocated_bytes - freed_bytes);
     }
-    return (uint8_t *) p + 16;
+    return (uint8_t *) p + DSV_ALIGNMENT;
 }
 
 extern void
 d28_free(void *ptr)
 {
     uint8_t *p;
+    int32_t nbytes;
+
+    if (ptr == NULL) {
+        DSV_ERROR(("attempting to free null pointer!"));
+        return;
+    }
     freed++;
-    p = ((uint8_t *) ptr) - 16;
-    freed_bytes += *((int32_t *) p);
+    p = ((uint8_t *) ptr) - DSV_ALIGNMENT;
+    memcpy(&nbytes, p, sizeof(int32_t));
+    freed_bytes += nbytes;
+
     if (peak_alloc < (allocated_bytes - freed_bytes)) {
         peak_alloc = (allocated_bytes - freed_bytes);
     }
-    DSV2_FREE_FUNC(p);
+    d28_aligned_free(p);
 }
 
 extern void
@@ -612,7 +674,7 @@ d28_memory_report(void)
 }
 #else
 extern void *
-d28_alloc(int size)
+d28_alloc(int32_t size)
 {
     return DSV2_ALLOC_FUNC(size);
 }
@@ -653,7 +715,6 @@ d28_mk_packet_buf(uint8_t *hdr, int hdrlen, DSV_BUF *rb, int *packet_type)
     if (hdr[4] != DSV_VERSION_MINOR) {
         DSV_ERROR(("bad version (%d), decoded video will likely look incorrect", hdr[4]));
     }
-   /* DSV_INFO(("DSV version 2.%d", hdr[4])); */
     size = (hdr[DSV_PACKET_NEXT_OFFSET + 0] << 24) |
            (hdr[DSV_PACKET_NEXT_OFFSET + 1] << 16) |
            (hdr[DSV_PACKET_NEXT_OFFSET + 2] << 8) |
@@ -754,7 +815,7 @@ pred(int left, int top, int topleft)
 
 /* B.2.3.4 Motion Data - Motion Vector Prediction */
 static void
-mv_pred(DSV_MV *vecs, DSV_PARAMS *p, int x, int y, int *px, int *py)
+movec_pred(DSV_MV *vecs, DSV_PARAMS *p, int x, int y, int *px, int *py)
 {
     DSV_MV *mv;
     int vx[3] = { 0, 0, 0 };
@@ -831,13 +892,37 @@ neighdif(DSV_MV *vecs, DSV_PARAMS *p, int x, int y)
 static int
 logb2(unsigned n)
 {
-    unsigned i = 1, log2 = 0;
+    unsigned log2 = 0;
 
-    while (i < n) {
-        i <<= 1;
+    n -= (n != 0);
+    while (n > 0) {
         log2++;
+        n >>= 1;
     }
     return log2;
+}
+
+/* 1 = 256 */
+static int
+flogb2(unsigned n)
+{
+    uint32_t t, frac, whole = 0;
+    if (n == 0) {
+        return 0;
+    }
+    t = n / 2;
+    while (t > 0) {
+        t >>= 1;
+        whole++;
+    }
+
+    if (whole > 7) {
+        frac = n >> (whole - 7);
+    } else {
+        frac = n << (7 - whole);
+    }
+
+    return (whole << 8) + ((frac & 0x7f) << 1);
 }
 
 /********************************** BITSTREAM *********************************/
@@ -926,34 +1011,50 @@ bs_get_neg(DSV_BS *bs)
     return v;
 }
 
+static unsigned
+local_update_rice_k(unsigned avg)
+{
+    unsigned k = 0;
+    avg >>= 3;
+    while (avg >>= 1) {
+        k++;
+    }
+    return k;
+}
+
+static unsigned
+local_update_rice_state(unsigned ravg, unsigned v)
+{
+    return ravg - (ravg >> 3) + v;
+}
+
 /* B. Encoding Type: adaptive Rice code (URC) */
 static unsigned
-bs_get_rice(DSV_BS *bs, int *rk, int damp)
+bs_get_rice(DSV_BS *bs, unsigned *rk, unsigned *avg)
 {
-    int k = (*rk) >> damp;
-    unsigned q = 0;
+    int k = (*rk);
+    unsigned q = 0, v;
     while (!bs_get_bit(bs)) {
         q++;
     }
-    if (q) {
-        (*rk)++;
-    } else if ((*rk) > 0) {
-        (*rk)--;
-    }
-    return (q << k) | bs_get_bits(bs, k);
+    v = (q << k) | bs_get_bits(bs, k);
+
+    *avg = local_update_rice_state(*avg, v);
+    *rk = local_update_rice_k(*avg);
+    return v;
 }
 
 static int
 u2s(unsigned uv)
 {
-    return (uv >> 1) ^ (-(uv & 1));
+    return DSV_U2S(uv);
 }
 
 /* B. Encoding Type: non-zero adaptive Rice code (NRC) */
 static int
-bs_get_nrice(DSV_BS *bs, int *rk, int damp)
+bs_get_nrice(DSV_BS *bs, unsigned *rk, unsigned *avg)
 {
-    return u2s(bs_get_rice(bs, rk, damp) + 1);
+    return u2s(bs_get_rice(bs, rk, avg) + 1);
 }
 
 /* B. Encoding Format: Zero Bit Run-Length Encoding (ZBRLE) */
@@ -1314,41 +1415,12 @@ d28_extend_frame(DSV_FRAME *frame)
 #define IS_LUMA (fm->cur_plane == 0)
 
 #define LLI_CONDITION  (IS_LUMA  && !IS_P && (l == 4))
-#define LLP_CONDITION  (IS_LUMA  &&  IS_P && (l == 4))
 #define L2A_CONDITION  (IS_LUMA  && !IS_P && (l == 2))
 #define CC_CONDITION   (!IS_LUMA && !IS_P && (l >= 1 && l <= (lvls - 2)))
 #define L1_CONDITION   (IS_LUMA  && !IS_P && (l == 1))
 
 /* overflow safety */
-#define OVF_SAFETY_CONDITION (l >= 6 && l >= (lvls - 3) && !fm->params->lossless)
-
-#define SHREX2 3
-#define INV_SCALE52(x) ((x) * 2 / 5)
-#define INV_SCALE20(x) ((x) / 2)
-#define INV_SCALE30(x) ((x) / 3)
-#define INV_SCALE40(x) ((x) / 4)
-#define INV_SCALENONE(x) (x)
-
-static DSV_SBC *temp_buf = NULL;
-static int temp_bufsz = 0;
-
-static void
-alloc_temp(int size)
-{
-    if (temp_bufsz < size) {
-        temp_bufsz = size;
-
-        if (temp_buf) {
-            d28_free(temp_buf);
-            temp_buf = NULL;
-        }
-
-        temp_buf = (DSV_SBC*) d28_alloc(temp_bufsz * sizeof(DSV_SBC));
-        if (temp_buf == NULL) {
-            DSV_ERROR(("out of memory"));
-        }
-    }
-}
+#define OVF_SAFETY_CONDITION (l >= 11 && l >= (lvls - 3) && !fm->params->lossless)
 
 static void
 cpysub(DSV_SBC *dst, DSV_SBC *src, unsigned w, unsigned h, unsigned stride)
@@ -1363,33 +1435,14 @@ cpysub(DSV_SBC *dst, DSV_SBC *src, unsigned w, unsigned h, unsigned stride)
 
 /* C.3 Rounding Divisions */
 static int
-round2(int v)
+round8(int v)
 {
-    return (v + (v < 0 ? -1 : 1)) / 2;
+    return (v + (v < 0 ? -4 : 4)) / 8;
 }
 
-static int
-round4(int v)
-{
-    return (v + (v < 0 ? -2 : 2)) / 4;
-}
-
-static int
-reflect(int i, int n)
-{
-    if (i < 0) {
-        i = -i;
-    }
-    if (i >= n) {
-        i = n + n - i;
-    }
-    return i;
-}
-
-/* chroma (CC) filter */
-#define CC0 3
-#define CCS 4
-#define CCA (1 << (CCS - 1))
+/* pos/neg reflect */
+#define RP(i, n, s) (((i) >= (n) ? (2 * (n) - (i) - 2) : (i)) * (s))
+#define RN(i, s) (((i) < 0 ? -(i) : (i)) * (s))
 
 /* L2 ringing filter */
 #define R20 3
@@ -1401,26 +1454,13 @@ reflect(int i, int n)
 #define S2S 5
 #define S2A (1 << (S2S - 1))
 
-/* reflected get */
-#define rg(x, s) reflect(x, (n - 1)) * s
-
-#define UNSCALE_UNPACK(scaleL, scaleH, s)             \
-  for (i = 0; i < even_n; i += 2) {                   \
-      out[(i + 0) * s] = scaleL(in[(i + 0) / 2 * s]); \
-      out[(i + 1) * s] = scaleH(in[(i + h) / 2 * s]); \
-  }                                                   \
-  if (n & 1) {                                        \
-      out[(n - 1) * s] = scaleL(in[(n - 1) / 2 * s]); \
-  }
-
-#define UNSCALE_UNPACK_SHREX(scaleL, scaleH, s, shrex)  \
-  for (i = 0; i < even_n; i += 2) {                     \
-      DSV_SBC th = scaleH(in[(i + h) / 2 * s]);         \
-      out[(i + 0) * s] = scaleL(in[(i + 0) / 2 * s]);   \
-      out[(i + 1) * s] = th + DSV_SAR(th, shrex);       \
-  }                                                     \
-  if (n & 1) {                                          \
-      out[(n - 1) * s] = scaleL(in[(n - 1) / 2 * s]);   \
+#define UNSCALE_UNPACK(in, out, scaleL, scaleH, n, si, so)  \
+  for (i = 0; i < even_n; i += 2) {                         \
+      out[(i + 0) * so] = in[(i +    0) / 2 * si] / scaleL; \
+      out[(i + 1) * so] = in[(i + half) / 2 * si] / scaleH; \
+  }                                                         \
+  if (n & 1) {                                              \
+      out[(n - 1) * so] = in[(n - 1) / 2 * si] / scaleL;    \
   }
 
 /* simple 3 tap low/high pass filters */
@@ -1438,27 +1478,11 @@ reflect(int i, int n)
       v[i * s] op (v[(i - 1) * s] + v[(i + 1) * s] + 2) >> 2;  \
   }
 
-#define DO_SIMPLE_INV(v, s) \
-  v[0] -= v[s] >> 1; \
-  for (i = 2; i < even_n; i += 2) { \
-      v[i * s] -= (v[(i - 1) * s] + v[(i + 1) * s] + 2) >> 2; \
-      v[(i - 1) * s] += (v[(i - 2) * s] + v[i * s] + 1) >> 1; \
-  } \
-  if (!(n & 1)) { \
-      v[(n - 1) * s] += v[(n - 2) * s]; \
-  }
-
 /* 5 tap low/high pass filters with/without adaptive ringing */
 #define MAKE_5_TAP(v, C0, CA, CS, op, s)            \
-  v[i * s] op (-v[rg(i - 3, s)] +                   \
+  v[i * s] op (-v[RN(i - 3, s)] +                   \
           C0 * (v[(i - 1) * s] + v[(i + 1) * s]) -  \
-                v[rg(i + 3, s)] + CA) >> CS
-
-#define DO_5_TAP_LO(v, C0, CA, CS, op, s) \
-  v[0] op v[s] >> 1;                      \
-  for (i = 2; i < even_n; i += 2) {       \
-      MAKE_5_TAP(v, C0, CA, CS, op, s);   \
-  }
+                v[RP(i + 3, n, s)] + CA) >> CS
 
 #define DO_5_TAP_LO_A(v, C0, CA, CS, R0, RA, RS, op, s)             \
   delta *= 2;                                                       \
@@ -1474,94 +1498,42 @@ reflect(int i, int n)
   }
 
 static void
-ifilterLLI(DSV_SBC *out, DSV_SBC *in, int n, int s)
+dwt_inverse(DSV_SBC *io, int n)
 {
-    int i, even_n = n & ~1, h = n + (n & 1);
-    UNSCALE_UNPACK(INV_SCALE52, INV_SCALE40, s);
-    /* Combined these for speed:
-       DO_SIMPLE_LO(out, -=, s);
-       DO_SIMPLE_HI(out, +=, s);
-    */
-    out[0] -= out[s] >> 1;
-    for (i = 2; i < even_n; i += 2) {
-        out[i * s] -= (out[(i - 1) * s] + out[(i + 1) * s] + 2) >> 2;
-        out[(i - 1) * s] += (out[(i - 2) * s] + out[i * s] + 1) >> 1;
-    }
-    if (n & 1) {
-        /* intentional use of 'i' after the for-loop */
-        out[(i - 1) * s] += (out[(i - 2) * s] + out[i * s] + 1) >> 1;
-    } else {
-        out[(n - 1) * s] += out[(n - 2) * s];
-    }
-}
-
-static void
-ifilterLLP(DSV_SBC *out, DSV_SBC *in, int n, int s)
-{
-    int i, even_n = n & ~1, h = n + (n & 1);
-    UNSCALE_UNPACK(INV_SCALE52, INV_SCALE20, s);
-    /* Combined these for speed:
-       DO_SIMPLE_LO(out, -=, s);
-       DO_SIMPLE_HI(out, +=, s);
-    */
-    out[0] -= out[s] >> 1;
-    for (i = 2; i < even_n; i += 2) {
-        out[i * s] -= (out[(i - 1) * s] + out[(i + 1) * s] + 2) >> 2;
-        out[(i - 1) * s] += (out[(i - 2) * s] + out[i * s] + 1) >> 1;
-    }
-    if (n & 1) {
-        /* intentional use of 'i' after the for-loop */
-        out[(i - 1) * s] += (out[(i - 2) * s] + out[i * s] + 1) >> 1;
-    } else {
-        out[(n - 1) * s] += out[(n - 2) * s];
-    }
-}
-
-static void
-ifilterCC(DSV_SBC *out, DSV_SBC *in, int n, int s)
-{
-    int i, even_n = n & ~1, h = n + (n & 1);
-    UNSCALE_UNPACK(INV_SCALE20, INV_SCALENONE, s);
-    DO_5_TAP_LO(out, CC0, CCA, CCS, -=, s);
-    DO_SIMPLE_HI(out, +=, s);
+    int i, even_n = n & ~1;
+    DO_SIMPLE_LO(io, -=, 1);
+    DO_SIMPLE_HI(io, +=, 1);
 }
 
 static void
 ifilterL2_a(DSV_SBC *out, DSV_SBC *in, int n, int s, uint8_t *sb, int delta, int sbs)
 {
-    int i, sbp = 0, even_n = n & ~1, h = n + (n & 1);
-    UNSCALE_UNPACK_SHREX(INV_SCALE20, INV_SCALE30, s, SHREX2);
+    int i, sbp = 0, even_n = n & ~1, half = n + (n & 1);
+    UNSCALE_UNPACK(in, out, 2, 2, n, s, s);
     DO_5_TAP_LO_A(out, S20, S2A, S2S, R20, R2A, R2S, -=, s);
     DO_SIMPLE_HI(out, +=, s);
 }
 
-static void
-ifilterL1(DSV_SBC *out, DSV_SBC *in, int n, int s)
-{
-    int i, even_n = n & ~1, h = n + (n & 1);
-    UNSCALE_UNPACK(INV_SCALE20, INV_SCALE40, s);
-    DO_SIMPLE_INV(out, s);
-}
 
-static void
-ifilterLOSSLESS(DSV_SBC *out, DSV_SBC *in, int n, int s)
-{
-    int i, even_n = n & ~1, h = n + (n & 1);
-    UNSCALE_UNPACK(INV_SCALENONE, INV_SCALENONE, s);
-    DO_SIMPLE_LO(out, -=, s);
-    DO_SIMPLE_HI(out, +=, s);
-}
-
-#define inv_2d(tmp, in, fw, fh, lvl, ifilter) \
+#define inv_2d(tmpbuf, img, width, height, stride, ifilter, scaleL, scaleH) \
 { \
-    int i, j, sw, sh; \
-    sw = DSV_ROUND_SHIFT(fw, lvl - 1); \
-    sh = DSV_ROUND_SHIFT(fh, lvl - 1); \
-    for (i = 0; i < sw; i++) { \
-        ifilter(tmp + i, in + i, sh, fw); \
+    int i, x, y; \
+    DSV_SBC *tmp = tmpbuf; \
+    for (x = 0; x < width; x++) { \
+        DSV_SBC *col = img + x; \
+        int even_n = height & ~1, half = height + (height & 1); \
+        UNSCALE_UNPACK(col, tmp, scaleL, scaleH, height, stride, 1); \
+        ifilter(tmp, height); \
+        for (y = 0; y < height; y++) { \
+            img[y * stride + x] = tmp[y]; \
+        } \
     } \
-    for (j = 0; j < sh; j++) { \
-        ifilter(in + fw * j, tmp + fw * j, sw, 1); \
+    for (y = 0; y < height; y++) { \
+        int even_n = width & ~1, half = width + (width & 1); \
+        DSV_SBC *row = img + y * stride; \
+        UNSCALE_UNPACK(row, tmp, scaleL, scaleH, width, 1, 1); \
+        ifilter(tmp, width); \
+        memcpy(row, tmp, width * sizeof(*tmp)); \
     } \
 }
 
@@ -1588,95 +1560,37 @@ inv_L2a_2d(DSV_SBC *tmp, DSV_SBC *in, int sW, int sH, int lvl, DSV_FMETA *fm)
     }
 }
 
-/* C.3.1.1 Haar Simple Inverse Transform */
-static void
-inv_simple(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int ovf_safety)
+static int
+is_monotonic(int a, int b, int c, int hqp)
 {
-    int x, y, woff, hoff, ws, hs, oddw, oddh;
-    int LL, LH, HL, HH;
-    int idx;
-    DSV_SBC *os, *od, *spLL, *spLH, *spHL, *spHH;
-
-    os = src;
-    od = dst;
-
-    woff = DSV_ROUND_SHIFT(width, lvl);
-    hoff = DSV_ROUND_SHIFT(height, lvl);
-
-    ws = DSV_ROUND_SHIFT(width, lvl - 1);
-    hs = DSV_ROUND_SHIFT(height, lvl - 1);
-    oddw = (ws & 1);
-    oddh = (hs & 1);
-
-    spLL = src;
-    spLH = src + woff;
-    spHL = src + hoff * width;
-    spHH = src + woff + hoff * width;
-    for (y = 0; y < hs - oddh; y += 2) {
-        DSV_SBC *dpA, *dpB;
-
-        dpA = dst + (y + 0) * width;
-        dpB = dst + (y + 1) * width;
-        for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
-            LL = spLL[idx] << ovf_safety;
-            LH = spLH[idx];
-            HL = spHL[idx];
-            HH = spHH[idx];
-
-            dpA[x + 0] = (LL + LH + HL + HH) / 4; /* LL */
-            dpA[x + 1] = (LL - LH + HL - HH) / 4; /* LH */
-            dpB[x + 0] = (LL + LH - HL - HH) / 4; /* HL */
-            dpB[x + 1] = (LL - LH - HL + HH) / 4; /* HH */
-        }
-        if (oddw) {
-            LL = spLL[idx] << ovf_safety;
-            HL = spHL[idx];
-
-            dpA[x + 0] = (LL + HL) / 4; /* LL */
-            dpB[x + 0] = (LL - HL) / 4; /* HL */
-        }
-        spLL += width;
-        spLH += width;
-        spHL += width;
-        spHH += width;
-    }
-    if (oddh) {
-        DSV_SBC *dpA = dst + (y + 0) * width;
-        for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
-            LL = spLL[idx] << ovf_safety;
-            LH = spLH[idx];
-
-            dpA[x + 0] = (LL + LH) / 4; /* LL */
-            dpA[x + 1] = (LL - LH) / 4; /* LH */
-        }
-        if (oddw) {
-            LL = spLL[idx] << ovf_safety;
-
-            dpA[x + 0] = (LL / 4); /* LL */
-        }
-    }
-    cpysub(os, od, ws, hs, width);
+    int da, dc;
+    da = b - a;
+    dc = c - b;
+    return da != 0 && dc != 0 && /* ensure gradient exists (not partially or totally flat) */
+           (DSV_SIGNOF(da) == DSV_SIGNOF(dc)) && /* ensure gradient is monotonous */
+           abs(da) < hqp && abs(dc) < hqp; /* ensure start and end values in gradient are not wildly different (for better edge preservation) */
 }
 
 /* C.3.1.2 Haar Filtered Inverse Transform */
 static void
-inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqp, int ovf_safety)
+inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqpLH, int hqpHL, int ovf_safety)
 {
     int x, y, woff, hoff, ws, hs, oddw, oddh;
     int LL, LH, HL, HH;
-    int idx;
+    int idx, mhqpLH, mhqpHL;
+
     DSV_SBC *os, *od, *spLL, *spLH, *spHL, *spHH;
-
-    os = src;
-    od = dst;
-
+    mhqpLH = 8 * hqpLH;
+    mhqpHL = 8 * hqpHL;
     woff = DSV_ROUND_SHIFT(width, lvl);
     hoff = DSV_ROUND_SHIFT(height, lvl);
 
     ws = DSV_ROUND_SHIFT(width, lvl - 1);
     hs = DSV_ROUND_SHIFT(height, lvl - 1);
-    oddw = (ws & 1);
-    oddh = (hs & 1);
+    oddw = ws & 1;
+    oddh = hs & 1;
+    os = src;
+    od = dst;
 
     spLL = src;
     spLH = src + woff;
@@ -1684,69 +1598,54 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqp, int ovf
     spHH = src + woff + hoff * width;
     for (y = 0; y < hs - oddh; y += 2) {
         DSV_SBC *dpA, *dpB;
-        int inY = y > 0 && y < (hs - oddh - 1);
+        int inY = hqpHL && (y > 0 && y < (hs - oddh - 1));
 
-        dpA = dst + (y + 0) * width;
-        dpB = dst + (y + 1) * width;
+        dpA = dst + y * width;
+        dpB = dpA + width;
         for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
-            int inX = x > 0 && x < (ws - oddw - 1);
-            int nudge, t, lp, ln, mn, mx;
+            int nudge, lp, ln;
+            int s0, s1, d0, d1;
+            int inX = hqpLH && (x > 0 && x < (ws - oddw - 1));
 
-            LL = spLL[idx] << ovf_safety;
+            LL = spLL[idx] * (1 << ovf_safety);
             LH = spLH[idx];
             HL = spHL[idx];
             HH = spHH[idx];
 
             if (inX) {
-                lp = spLL[idx - 1] << ovf_safety; /* prev */
-                ln = spLL[idx + 1] << ovf_safety; /* next */
-                mx = LL - ln; /* find difference between LL values */
-                mn = lp - LL;
-                if (mn > mx) {
-                    t = mn;
-                    mn = mx;
-                    mx = t;
-                }
-                mx = MIN(mx, 0); /* must be negative or zero */
-                mn = MAX(mn, 0); /* must be positive or zero */
-                /* if they are not zero, then there is a potential
-                 * consistent smooth gradient between them */
-                if (mx != mn) {
-                    t = round4(lp - ln);
-                    nudge = round2(CLAMP(t, mx, mn) - (LH * 2));
-                    LH += CLAMP(nudge, -hqp, hqp); /* nudge LH to smooth it */
+                lp = spLL[idx - 1] * (1 << ovf_safety); /* prev */
+                ln = spLL[idx + 1] * (1 << ovf_safety); /* next */
+                if (is_monotonic(lp, LL, ln, mhqpLH)) {
+                    nudge = round8(lp - ln) - LH;
+                    LH += CLAMP(nudge, -hqpLH, hqpLH); /* nudge LH to smooth it */
                 }
             }
             if (inY) { /* do the same as above but in the Y direction */
-                lp = spLL[idx - width] << ovf_safety;
-                ln = spLL[idx + width] << ovf_safety;
-                mx = LL - ln;
-                mn = lp - LL;
-                if (mn > mx) {
-                    t = mn;
-                    mn = mx;
-                    mx = t;
-                }
-                mx = MIN(mx, 0);
-                mn = MAX(mn, 0);
-                if (mx != mn) {
-                    t = round4(lp - ln);
-                    nudge = round2(CLAMP(t, mx, mn) - (HL * 2));
-                    HL += CLAMP(nudge, -hqp, hqp); /* nudge HL to smooth it */
+                lp = spLL[idx - width] * (1 << ovf_safety);
+                ln = spLL[idx + width] * (1 << ovf_safety);
+                if (is_monotonic(lp, LL, ln, mhqpHL)) {
+                    nudge = round8(lp - ln) - HL;
+                    HL += CLAMP(nudge, -hqpHL, hqpHL); /* nudge HL to smooth it */
                 }
             }
 
-            dpA[x + 0] = (LL + LH + HL + HH) / 4; /* LL */
-            dpA[x + 1] = (LL - LH + HL - HH) / 4; /* LH */
-            dpB[x + 0] = (LL + LH - HL - HH) / 4; /* HL */
-            dpB[x + 1] = (LL - LH - HL + HH) / 4; /* HH */
+            s0 = LL + HL;
+            s1 = LL - HL;
+            d0 = LH + HH;
+            d1 = LH - HH;
+
+            dpA[x + 0] = (s0 + d0) / 4;
+            dpA[x + 1] = (s0 - d0) / 4;
+            dpB[x + 0] = (s1 + d1) / 4;
+            dpB[x + 1] = (s1 - d1) / 4;
         }
+
         if (oddw) {
-            LL = spLL[idx] << ovf_safety;
+            LL = spLL[idx] * (1 << ovf_safety);
             HL = spHL[idx];
 
-            dpA[x + 0] = (LL + HL) / 4; /* LL */
-            dpB[x + 0] = (LL - HL) / 4; /* HL */
+            dpA[ws - 1] = (LL + HL) / 4;
+            dpB[ws - 1] = (LL - HL) / 4;
         }
         spLL += width;
         spLH += width;
@@ -1754,22 +1653,22 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqp, int ovf
         spHH += width;
     }
     if (oddh) {
-        DSV_SBC *dpA = dst + (y + 0) * width;
+        DSV_SBC *dpA = dst + (hs - 1) * width;
         for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
-            LL = spLL[idx] << ovf_safety;
+            LL = spLL[idx] * (1 << ovf_safety);
             LH = spLH[idx];
 
-            dpA[x + 0] = (LL + LH) / 4; /* LL */
-            dpA[x + 1] = (LL - LH) / 4; /* LH */
+            dpA[x + 0] = (LL + LH) / 4;
+            dpA[x + 1] = (LL - LH) / 4;
         }
         if (oddw) {
-            LL = spLL[idx] << ovf_safety;
-
-            dpA[x + 0] = LL / 4; /* LL */
+            LL = spLL[idx] * (1 << ovf_safety);
+            dpA[ws - 1] = LL / 4;
         }
     }
     cpysub(os, od, ws, hs, width);
 }
+
 
 /* C.3.3 Subband Recomposition */
 static void
@@ -1795,7 +1694,7 @@ nlevels(int w, int h)
 {
     int lb2, mx;
 
-    mx = (w > h) ? w : h;
+    mx = MAX(w, h);
     lb2 = logb2(mx);
     if (mx > (1 << lb2)) {
         lb2++;
@@ -1803,394 +1702,13 @@ nlevels(int w, int h)
     return lb2;
 }
 
-/* C.3.3 Subband Recomposition */
-static void
-inv_sbt(DSV_PLANE *dst, DSV_COEFS *src, int q, DSV_FMETA *fm)
-{
-    int w, h, lvls, l, hqp, ovf_safety;
-    DSV_SBC *temp_buf_pad;
-
-    w = src->width;
-    h = src->height;
-
-    lvls = nlevels(w, h);
-    alloc_temp((w + 2) * (h + 2));
-    temp_buf_pad = temp_buf + w;
-
-    for (l = lvls; l > 0; l--) {
-        hqp = (fm->cur_plane == 0) ? (q / (fm->isP ? 14 : (l > 4 ? 2 : 8))) : (q / 2);
-        ovf_safety = OVF_SAFETY_CONDITION;
-
-        if (fm->params->lossless) {
-            if ((l >= 1 && l <= (lvls - 2))) {
-                inv_2d(temp_buf_pad, src->data, w, h, l, ifilterLOSSLESS);
-            } else {
-                inv_simple(src->data, temp_buf_pad, w, h, l, ovf_safety);
-            }
-            continue;
-        }
-        if (LLI_CONDITION) {
-            inv_2d(temp_buf_pad, src->data, w, h, l, ifilterLLI);
-        } else if (LLP_CONDITION) {
-            inv_2d(temp_buf_pad, src->data, w, h, l, ifilterLLP);
-        } else if (CC_CONDITION) {
-            inv_2d(temp_buf_pad, src->data, w, h, l, ifilterCC);
-        } else if (L2A_CONDITION) {
-            inv_L2a_2d(temp_buf_pad, src->data, w, h, l, fm);
-        } else if (L1_CONDITION) {
-            inv_2d(temp_buf_pad, src->data, w, h, l, ifilterL1);
-        } else {
-            if (fm->cur_plane == 0 || !fm->isP) {
-                inv(src->data, temp_buf_pad, w, h, l, hqp, ovf_safety);
-            } else {
-                inv_simple(src->data, temp_buf_pad, w, h, l, ovf_safety);
-            }
-        }
-    }
-
-    sbc2p(dst, src);
-}
-
-/************************************ BMC *************************************/
-
-/* Block-based Motion Compensation */
-
-static uint8_t
-clamp_u8(int v)
-{
-    return v > 255 ? 255 : v < 0 ? 0 : v;
-}
-
-static int
-avgval(uint8_t *dec, int dw, int w, int h)
-{
-    int i, j;
-    int avg = 0;
-
-    for (j = 0; j < h; j++) {
-        for (i = 0; i < w; i++) {
-            avg += dec[i];
-        }
-        dec += dw;
-    }
-    return avg / (w * h);
-}
-
-/* copy directly from reference block (full-pel) */
-static void
-cpyblk(uint8_t *dec, uint8_t *ref, int dw, int rw, int w, int h)
-{
-    while (h-- > 0) {
-        memcpy(dec, ref, w);
-        ref += rw;
-        dec += dw;
-    }
-}
-
-/* D.5.2 Filtering */
-
-#define ITEST4x4(t) (abs(e0 - avg) < (t) && \
-                     abs(i0 - avg) < (t) && \
-                     abs(e1 - avg) < (t) && \
-                     abs(i1 - avg) < (t) && \
-                     abs(e2 - avg) < (t) && \
-                     abs(i2 - avg) < (t))
-
-#define FILTER_DIM 4 /* do not touch, filters are hardcoded as 4x4 operations */
-
-
-#define LPF ((5 * (e0 + i0) + 3 * (e1 + i1) + 8) >> 4)
-
-#define FC_E1 ((3 * (avg + e1) + 2 * e2 + 4) >> 3)
-#define FC_E0 ((avg + 2 * e1 + e2 + 4) >> 3)  /* assumes avg was already *= 5 */
-#define FC_I0 (avg)
-#define FC_I1 ((avg + 2 * i1 + i2 + 4) >> 3)  /* assumes avg was already *= 5 */
-
-static void
-ihfilter4x4(DSV_PLANE *dp, int x, int y, int edge, int threshE, int threshM)
-{
-    int line, top, bot;
-    uint8_t *b = dp->data;
-    int w = dp->w;
-    int h = dp->h;
-    int s = dp->stride;
-    int in_edge;
-
-    if ((x < FILTER_DIM) || (x > w - FILTER_DIM) ||
-        (edge && threshE <= 0) || (threshM <= 0)) {
-        return;
-    }
-    top = x + CLAMP(y, 0, (h - 1)) * s;
-    bot = x + CLAMP(y + FILTER_DIM, 0, (h - 1)) * s;
-    in_edge = x < (w - FILTER_DIM - FILTER_DIM);
-    if (!edge) {
-        threshE = threshM;
-    }
-    for (line = top; line < bot; line += s) {
-        int i2, i1, i0, e0, e1, e2, avg;
-
-        e2 = b[line - 3];
-        e1 = b[line - 2];
-        e0 = b[line - 1];
-        i0 = b[line + 0];
-        i1 = b[line + 1];
-        i2 = b[line + 2];
-
-        avg = LPF;
-        if (ITEST4x4(threshE)) {
-            b[line - 2] = FC_E1;
-            b[line + 0] = FC_I0;
-            avg *= 5;
-            b[line - 1] = FC_E0;
-            b[line + 1] = FC_I1;
-        }
-
-        if (in_edge) {
-            int k = line + FILTER_DIM;
-            i2 = b[k - 2];
-            i1 = b[k - 1];
-            i0 = b[k + 0];
-            e0 = b[k + 1];
-            e1 = b[k + 2];
-            e2 = b[k + 3];
-
-            avg = LPF;
-            if (ITEST4x4(threshM)) {
-                b[k + 0] = FC_I0;
-                b[k + 2] = FC_E1;
-                avg *= 5;
-                b[k - 1] = FC_I1;
-                b[k + 1] = FC_E0;
-            }
-        }
-    }
-}
-
-static void
-ivfilter4x4(DSV_PLANE *dp, int x, int y, int edge, int threshE, int threshM)
-{
-    int beg, end;
-    int i, s2, s3;
-    int w = dp->w;
-    int h = dp->h;
-    int s = dp->stride;
-    uint8_t *b = dp->data;
-    uint8_t *bk = b + FILTER_DIM * s;
-    int in_edge;
-
-    if ((y < FILTER_DIM) || (y > h - FILTER_DIM) ||
-        (edge && threshE <= 0) || (threshM <= 0)) {
-        return;
-    }
-    beg = CLAMP(x, 0, (w - 1)) + y * s;
-    end = CLAMP(x + FILTER_DIM, 0, (w - 1)) + y * s;
-    s2 = s * 2;
-    s3 = s * 3;
-    in_edge = y < (h - FILTER_DIM - FILTER_DIM);
-    if (!edge) {
-        threshE = threshM;
-    }
-    for (i = beg; i < end; i++) {
-        int i2, i1, i0, e0, e1, e2, avg;
-
-        e2 = b[i - s3];
-        e1 = b[i - s2];
-        e0 = b[i - s];
-        i0 = b[i + 0];
-        i1 = b[i + s];
-        i2 = b[i + s2];
-
-        avg = LPF;
-        if (ITEST4x4(threshE)) {
-            b[i - s2] = FC_E1;
-            b[i + 0] = FC_I0;
-            avg *= 5;
-            b[i - s] = FC_E0;
-            b[i + s] = FC_I1;
-        }
-
-        if (in_edge) {
-            i2 = bk[i - s2];
-            i1 = bk[i - s];
-            i0 = bk[i + 0];
-            e0 = bk[i + s];
-            e1 = bk[i + s2];
-            e2 = bk[i + s3];
-
-            avg = LPF;
-            if (ITEST4x4(threshM)) {
-                bk[i + 0] = FC_I0;
-                bk[i + s2] = FC_E1;
-                avg *= 5;
-                bk[i - s] = FC_I1;
-                bk[i + s] = FC_E0;
-            }
-        }
-    }
-}
-
-/* downsampled filter factor for a 4x4 block */
-static unsigned
-dsff4x4(uint8_t *a, int as)
-{
-    unsigned sh, sv;
-    int dsp0, dsp1, dsp2, dsp3;
-
-    /* create downsampled pixels */
-    dsp0 = ((a[0] + a[1] + a[as + 0] + a[as + 1] + 2) >> 2);
-    dsp1 = ((a[2] + a[3] + a[as + 2] + a[as + 3] + 2) >> 2);
-    a += 2 * as;
-    dsp2 = ((a[0] + a[1] + a[as + 0] + a[as + 1] + 2) >> 2);
-    dsp3 = ((a[2] + a[3] + a[as + 2] + a[as + 3] + 2) >> 2);
-
-    /* determine if the detail should be kept */
-    sh = abs((dsp0 + dsp1) - (dsp3 + dsp2));
-    sv = abs((dsp2 + dsp1) - (dsp3 + dsp0));
-    if (MAX(sh, sv) < 8) {
-        return 0;
-    }
-    /* find how much it should be smoothed, derived from 'haar' metric */
-    dsp2 = 255 - dsp2;
-    dsp3 = 255 - dsp3;
-    sh = abs(dsp0 - dsp1 + dsp2 - dsp3) >> 0;
-    sv = abs(dsp0 + dsp1 - dsp2 - dsp3) >> 2;
-    if (sh > sv) {
-        return (3 * sh + sv + 2) >> 2;
-    }
-    return (3 * sv + sh + 2) >> 2;
-}
-
-static void
-haar4x4(uint8_t *src, int as, int *psh, int *psv)
-{
-    uint8_t *spA, *spB;
-    int x0, x1, x2, x3;
-    int x, y;
-    int idx, HH, sh = 0, sv = 0;
-
-    for (y = 0; y < 4; y += 2) {
-        spA = src + (y + 0) * as;
-        spB = src + (y + 1) * as;
-        for (x = 0, idx = 0; x < 4; x += 2, idx++) {
-            x0 = spA[x + 0];
-            x1 = spA[x + 1];
-            x2 = spB[x + 0];
-            x3 = spB[x + 1];
-
-            HH = abs(x0 - x1 - x2 + x3) >> 1;
-            sh += abs(x0 - x1 + x2 - x3); /* LH */
-            sv += abs(x0 + x1 - x2 - x3); /* HL */
-            sh += HH; /* HH */
-            sv += HH; /* HH */
-        }
-    }
-    *psh = sh;
-    *psv = sv;
-}
-
-static void
-artf4x4(uint8_t *a, int as, int *psh, int *psv, int *pslh, int *pslv)
-{
-    int dsp0, dsp1, dsp2, dsp3, HH;
-    haar4x4(a, as, psh, psv);
-
-    /* create downsampled pixels */
-    dsp0 = (a[0] + a[1] + a[as + 0] + a[as + 1] + 2) >> 2;
-    dsp1 = (a[2] + a[3] + a[as + 2] + a[as + 3] + 2) >> 2;
-    a += 2 * as;
-    dsp2 = (a[0] + a[1] + a[as + 0] + a[as + 1] + 2) >> 2;
-    dsp3 = (a[2] + a[3] + a[as + 2] + a[as + 3] + 2) >> 2;
-
-    *pslh = abs(dsp0 - dsp1 + dsp2 - dsp3);
-    *pslv = abs(dsp0 + dsp1 - dsp2 - dsp3);
-    HH = abs(dsp0 - dsp1 - dsp2 + dsp3) >> 1;
-    *pslh += HH;
-    *pslv += HH;
-}
-
-#define HISTBITS 4
-#define NHIST (1 << HISTBITS)
-
-/* de-gradient filter */
-static void
-degrad4x4(uint8_t *a, int as)
-{
-    uint8_t hist[NHIST];
-    uint16_t avgs[NHIST];
-    int x, y, lo, hi, alo, ahi, flo, fhi, t;
-    uint8_t *sp = a;
-
-    memset(hist, 0, sizeof(hist));
-    memset(avgs, 0, sizeof(avgs));
-    /* generate histogram of quantized luma samples + averages of each bucket */
-    for (y = 0; y < 4; y++) {
-        for (x = 0; x < 4; x++) {
-            t = sp[x] >> (8 - HISTBITS);
-            hist[t]++;
-            avgs[t] += sp[x];
-        }
-        sp += as;
-    }
-    lo = -1;
-    hi = -1;
-    /* find darkest and brightest buckets of the histogram */
-    for (x = 0; x < NHIST; x++) {
-        if (hist[x]) {
-            if (lo == -1) {
-                lo = x;
-            }
-            hi = x;
-        }
-    }
-    /* ignore mostly flat blocks */
-    if (lo >= hi) {
-        return;
-    }
-    alo = avgs[lo] / hist[lo];
-    ahi = avgs[hi] / hist[hi];
-
-    if (alo == 0) {
-        alo = 1;
-    }
-    if (ahi == 0) {
-        ahi = 1;
-    }
-    flo = hist[lo];
-    fhi = hist[hi];
-    /* midpoint brightness of the block and the epsilon around the midpoint */
-    t = (alo + ahi + 1) >> 1;
-
-    sp = a;
-    for (y = 0; y < 4; y++) {
-        for (x = 0; x < 4; x++) {
-            int os = sp[x];
-            /* blend outliers with the low and high bucket averages */
-            if (os < t) {
-                sp[x] = os + ((flo * (alo - os)) / 16);
-            } else if (os > t) {
-                sp[x] = os + ((fhi * (ahi - os)) / 16);
-            }
-        }
-        sp += as;
-    }
-}
-
-/* non-linearize texture */
-static int
-curve_tex(int tt)
-{
-    if (tt < 8) {
-        return (8 - tt) * 8;
-    }
-    if (tt > 192) {
-        return 0;
-    }
-    return (tt - (8 - 1));
-}
-
 #define SB_LH       1
 #define SB_HL       2
 #define SB_HH       3
+#define MAXLVL   3
+#define LVL1     (MAXLVL - 1) /* highest freq */
+#define LVL2     (MAXLVL - 2) /* second highest freq */
+#define LVL3     (MAXLVL - 3) /* third highest freq */
 
 /* larger dimensions -> higher freq is less important */
 static int
@@ -2212,21 +1730,351 @@ spatial_psy_factor(DSV_PARAMS *p, int subband)
         scale = p->nblocks_h * p->nblocks_v;
     }
     scale = MAX(0, scale - lo);
-    return (scale << 7) / (hi - lo);
+    scale = (scale << 7) / MAX(hi - lo, 1);
+    return CLAMP(scale, 0, 128);
 }
 
 static int
-compute_filter_q(DSV_PARAMS *p, int q)
+lfquant(DSV_FMETA *fm, int q)
 {
-    int psyf = spatial_psy_factor(p, -1);
-    if (q > 1536) {
-        q = 1536;
+    int psyfac;
+
+    psyfac = spatial_psy_factor(fm->params, SB_HH);
+
+    q -= (q * psyfac >> (7 + (fm->isP ? 1 : 3)));
+    q = MAX(q / 2, 2);
+    /* prevent important lower level coefficients from getting destroyed */
+    if (fm->cur_plane) {
+        if (q > 256) {
+            q = 256 + q / 4;
+        }
+        return MIN(q, 768);
     }
-    q += q * psyf >> (7 + 3);
-    if (q < 1024) {
-        q = 512 + q / 2;
+    return MIN(q, 3072);
+}
+
+static int
+hfquant(DSV_FMETA *fm, int q, int s, int l)
+{
+    int psyq, psyfac, chroma;
+
+    chroma = (fm->cur_plane != 0);
+    psyfac = spatial_psy_factor(fm->params, s);
+
+    q /= 2;
+
+    psyq = q * psyfac >> (7 + (fm->isP ? 0 : 1));
+
+    if (chroma) {
+        /* reduce based on subsampling */
+        int tl;
+        tl = l - 2;
+        if (s == SB_LH) {
+            tl += DSV_FORMAT_H_SHIFT(fm->params->vidmeta->subsamp);
+        } else if (s == SB_HL) {
+            tl += DSV_FORMAT_V_SHIFT(fm->params->vidmeta->subsamp);
+        }
+        q = (q * 6) / MAX(4 - tl, 1);
+    } else {
+        /* reduce higher frequencies appropriately */
+        if (l == LVL2) {
+            q += psyq / 2;
+        } else if (l == LVL1) {
+            q += psyq;
+        }
     }
-    return q;
+    if (fm->isP) {
+        int div = 16;
+        if (l == LVL3) {
+            q = q * 3 / 2;
+        }
+        if (l != LVL1) {
+            div += flogb2(psyfac / 16) >> (5 + l);
+        }
+        return MAX(q * 4 / div, DSV_MINQUANT);
+    }
+    if (s == SB_HH) { /* quantize HH more */
+        q *= (l * 2 + 1);
+    }
+    q += q * l / 4;
+    if (!chroma) {
+        q = (q * (l * 3 + 3)) / 8;
+    } else {
+        q /= 4;
+    }
+    return MAX(q, DSV_MINQUANT);
+}
+
+/* C.3.3 Subband Recomposition */
+static void
+inv_sbt(DSV_PLANE *dst, DSV_COEFS *src, int q, DSV_FMETA *fm)
+{
+    int w, h, lvls, l, hqpLH, hqpHL, ovf_safety;
+    DSV_SBC *temp_buf_pad, *temp_buf_line;
+
+    w = src->width;
+    h = src->height;
+
+    lvls = nlevels(w, h);
+    temp_buf_pad = fm->transform_buf + w;
+    temp_buf_line = fm->transform_buf + ((w + 2) * (h + 2));
+
+    for (l = lvls; l > 0; l--) {
+        int sw, sh;
+        sw = DSV_ROUND_SHIFT(w, l - 1);
+        sh = DSV_ROUND_SHIFT(h, l - 1);
+        if (l >= 4) {
+            hqpLH = lfquant(fm, q);
+            hqpHL = hqpLH;
+        } else {
+            hqpLH = hfquant(fm, q, 1, 3 - l);
+            hqpHL = hfquant(fm, q, 2, 3 - l);
+        }
+        ovf_safety = OVF_SAFETY_CONDITION;
+
+        if (fm->params->lossless) {
+            if (l >= 1 && l <= (lvls - 2)) {
+                inv_2d(temp_buf_line, src->data, sw, sh, w, dwt_inverse, 1, 1);
+            } else {
+                inv(src->data, temp_buf_pad, w, h, l, 0, 0, ovf_safety);
+            }
+            continue;
+        }
+        if (LLI_CONDITION) {
+            inv_2d(temp_buf_line, src->data, sw, sh, w, dwt_inverse, 2, 2);
+        } else if (CC_CONDITION) {
+            inv_2d(temp_buf_line, src->data, sw, sh, w, dwt_inverse, 2, 1);
+        } else if (L2A_CONDITION) {
+            inv_L2a_2d(temp_buf_pad, src->data, w, h, l, fm);
+        } else if (L1_CONDITION) {
+            inv_2d(temp_buf_line, src->data, sw, sh, w, dwt_inverse, 2, 4);
+        } else {
+            inv(src->data, temp_buf_pad, w, h, l, hqpLH, hqpHL, ovf_safety);
+        }
+    }
+
+    sbc2p(dst, src);
+}
+
+/************************************ BMC *************************************/
+
+/* Block-based Motion Compensation */
+
+static uint8_t
+clamp_u8(int v)
+{
+    return v > 255 ? 255 : v < 0 ? 0 : v;
+}
+
+static int
+avgval(uint8_t *a, int as, int w, int h)
+{
+    int i, j;
+    int avg = 0;
+    if (w == 0 || h == 0) {
+        return 0;
+    }
+    for (j = 0; j < h; j++) {
+        for (i = 0; i < w; i++) {
+            avg += a[i];
+        }
+        a += as;
+    }
+    return avg / (w * h);
+}
+
+/* copy directly from reference block (full-pel) */
+static void
+cpyblk(uint8_t *dec, uint8_t *ref, int dw, int rw, int w, int h)
+{
+    while (h-- > 0) {
+        memcpy(dec, ref, w);
+        ref += rw;
+        dec += dw;
+    }
+}
+
+/* D.5.2 Filtering */
+#define ITEST4x4_FLAT(e, f) (abs(e0 - avg) < (e) && \
+                             abs(i0 - avg) < (e) && \
+                             abs(e1 - avg) < (f) && \
+                             abs(i1 - avg) < (f) && \
+                             abs(e2 - avg) < (f) && \
+                             abs(i2 - avg) < (f))
+
+#define FILTER_DIM 4 /* do not touch, filters are hardcoded as 4x4 operations */
+
+#define LPF ((8 * (i0 + e0) + 5 * (e1 + i1) + 3 * (e2 + i2) + 16) >> 5)
+
+#define FC_E1 ((4 * e1 + 2 * e2 + i0 + e0 + 4) >> 3)
+#define FC_E0 ((2 * (i0 + e0 + e1) + i1 + e2 + 4) >> 3)
+#define FC_I0 ((2 * (i1 + i2 + e1) + e0 + i0 + 4) >> 3)
+
+/* these filtering functions, when combined, give a strong blur */
+static void
+ihfilter4x4(DSV_PLANE *dp, int x, int y, int threshE, int threshF)
+{
+    int line, top, bot;
+    int s = dp->stride;
+
+    if (threshE <= 0 || threshF <= 0) {
+        return;
+    }
+    top = x + y * s;
+    bot = x + (y + FILTER_DIM) * s;
+
+    for (line = top; line < bot; line += s) {
+        int i2, i1, i0, e0, e1, e2, avg;
+        uint8_t *b;
+
+        b = dp->data + line;
+        e2 = b[-3];
+        e1 = b[-2];
+        e0 = b[-1];
+        i0 = b[0];
+        i1 = b[1];
+        i2 = b[2];
+        avg = LPF;
+        if (ITEST4x4_FLAT(threshE, threshF)) {
+            b[-2] = FC_E1;
+            b[-1] = FC_E0;
+            b[0] = FC_I0;
+        }
+
+        b += FILTER_DIM;
+        i2 = b[-2];
+        i1 = b[-1];
+        i0 = b[0];
+        e0 = b[1];
+        e1 = b[2];
+        e2 = b[3];
+        avg = LPF;
+        if (ITEST4x4_FLAT(threshE, threshF)) {
+            b[0] = FC_I0;
+            b[1] = FC_E0;
+            b[2] = FC_E1;
+        }
+    }
+}
+
+static void
+ivfilter4x4(DSV_PLANE *dp, int x, int y, int threshE, int threshF)
+{
+    int beg, end;
+    int i, s2, s3;
+    int s = dp->stride;
+    uint8_t *bk;
+
+    if (threshE <= 0 || threshF <= 0) {
+        return;
+    }
+    bk = dp->data + FILTER_DIM * s;
+    beg = x + y * s;
+    end = x + FILTER_DIM + y * s;
+    s2 = s * 2;
+    s3 = s * 3;
+
+    for (i = beg; i < end; i++) {
+        int i2, i1, i0, e0, e1, e2, avg;
+        uint8_t *b;
+
+        b = dp->data + i;
+        e2 = b[-s3];
+        e1 = b[-s2];
+        e0 = b[-s];
+        i0 = b[0];
+        i1 = b[s];
+        i2 = b[s2];
+        avg = LPF;
+        if (ITEST4x4_FLAT(threshE, threshF)) {
+            b[-s2] = FC_E1;
+            b[-s] = FC_E0;
+            b[0] = FC_I0;
+        }
+
+        b = bk + i;
+        i2 = b[-s2];
+        i1 = b[-s];
+        i0 = b[0];
+        e0 = b[s];
+        e1 = b[s2];
+        e2 = b[s3];
+        avg = LPF;
+        if (ITEST4x4_FLAT(threshE, threshF)) {
+            b[0] = FC_I0;
+            b[s] = FC_E0;
+            b[s2] = FC_E1;
+        }
+    }
+}
+
+static void
+haar4x4(uint8_t *src, int as, int *psh, int *psv)
+{
+    uint8_t *spA, *spB;
+    int x, y;
+    int sh = 0, sv = 0;
+
+    spA = src;
+    spB = src + as;
+    as *= 2;
+    for (y = 0; y < 4; y += 2) {
+        for (x = 0; x < 4; x += 2) {
+            int s0, s1, d0, d1, HH;
+            int x0, x1, x2, x3;
+
+            x0 = spA[x + 0];
+            x1 = spA[x + 1];
+            x2 = spB[x + 0];
+            x3 = spB[x + 1];
+
+            s0 = x0 + x1;
+            s1 = x2 + x3;
+            d0 = x0 - x1;
+            d1 = x2 - x3;
+
+            HH = (d0 - d1) / 2;
+
+            sh += d0 + d1 + HH; /* LH + HH */
+            sv += s0 - s1 + HH; /* HL + HH  */
+        }
+        spA += as;
+        spB += as;
+    }
+    *psh = sh;
+    *psv = sv;
+}
+
+#define MIN4(a, b, c, d) MIN(MIN(a, b), MIN(c, d))
+#define MAX4(a, b, c, d) MAX(MAX(a, b), MAX(c, d))
+
+static int
+ds4x4to2x2(uint8_t *a0, int as, int dsp[4])
+{
+    uint8_t *a1 = a0 + as;
+    /* create downsampled pixels */
+    dsp[0] = DSV_UAVG4(a0[0], a0[1], a1[0], a1[1]);
+    dsp[1] = DSV_UAVG4(a0[2], a0[3], a1[2], a1[3]);
+    a0 += 2 * as;
+    a1 += 2 * as;
+    dsp[2] = DSV_UAVG4(a0[0], a0[1], a1[0], a1[1]);
+    dsp[3] = DSV_UAVG4(a0[2], a0[3], a1[2], a1[3]);
+
+    return 2 * (MAX4(dsp[0], dsp[1], dsp[2], dsp[3]) - MIN4(dsp[0], dsp[1], dsp[2], dsp[3]));
+}
+
+static void
+haar2L(uint8_t *a, int as, int *psh, int *psv, int *pslh, int *pslv, int *span)
+{
+    int dsp[4], HH;
+
+    haar4x4(a, as, psh, psv);
+    *span = ds4x4to2x2(a, as, dsp);
+    HH = (dsp[0] - dsp[1] - dsp[2] + dsp[3]) / 2;
+    *psh = abs(*psh);
+    *psv = abs(*psv);
+    *pslh = abs((dsp[0] - dsp[1] + dsp[2] - dsp[3]) + HH);
+    *pslv = abs((dsp[0] + dsp[1] - dsp[2] - dsp[3]) + HH);
 }
 
 static void
@@ -2234,7 +2082,9 @@ intra_filter(int q, DSV_PARAMS *p, DSV_FMETA *fm, int c, DSV_PLANE *dp, int do_f
 {
     int i, j, x, y;
     int nsbx, nsby;
-    int fthresh;
+    int fthresh, lowt;
+    uint8_t *tcache = NULL;
+
     if (p->lossless) {
         return;
     }
@@ -2246,257 +2096,503 @@ intra_filter(int q, DSV_PARAMS *p, DSV_FMETA *fm, int c, DSV_PLANE *dp, int do_f
     }
     nsbx = dp->w / FILTER_DIM;
     nsby = dp->h / FILTER_DIM;
-    q = compute_filter_q(p, q);
-    fthresh = 32 * (14 - logb2(q));
+
+    tcache = (uint8_t *) d28_alloc(nsbx * sizeof(*tcache));
+    if (tcache == NULL) {
+        DSV_ERROR(("out of memory"));
+    }
+    fthresh = q / 64;
+    if (q < 128) {
+        fthresh -= (128 - q) / 8;
+    }
+    fthresh = CLAMP(fthresh, 0, 24);
+    lowt = MIN((q >> 8), 16);
     for (j = 0; j < nsby; j++) {
-        int fy = (j * p->nblocks_v / nsby);
+        int fy = j / FILTER_DIM;
         y = j * FILTER_DIM;
-        if ((y + FILTER_DIM) >= dp->h) {
-            continue;
-        }
+
+        memset(tcache, 0, nsbx * sizeof(*tcache));
         for (i = 0; i < nsbx; i++) {
-            int fx = (i * p->nblocks_h / nsbx);
+            int fx = i / FILTER_DIM;
             int flags = fm->blockdata[fx + fy * p->nblocks_h];
-            int tt = 32;
 
             x = i * FILTER_DIM;
-            if ((x + FILTER_DIM) >= dp->w) {
-                continue;
-            }
-            if (do_filter && !(flags & DSV_IS_RINGING)) {
-                int sh, sv, shl, svl;
-                artf4x4(DSV_GET_XY(dp, x, y), dp->stride, &sh, &sv, &shl, &svl);
-                /* only filter blocks with significant texture */
-                if ((MAX(sh, sv) < 256 && MAX(sh, sv) > 8)) {
-                    if (flags & (DSV_IS_MAINTAIN | DSV_IS_STABLE)) {
-                        tt = dsff4x4(DSV_GET_XY(dp, x, y), dp->stride);
-                        if (flags & DSV_IS_STABLE) {
-                            tt = tt * 5 >> 2;
-                        }
+
+            if (!(flags & DSV_IS_RINGING)) {
+                int sh, sv, shl, svl, span;
+                int tt = 0, avg_energy;
+                haar2L(DSV_GET_XY(dp, x, y), dp->stride, &sh, &sv, &shl, &svl, &span);
+                avg_energy = DSV_UAVG4(sh, shl, sv, svl);
+
+                if ((span >> 1) < MAX(lowt, avg_energy)) {
+                    int tl = (shl + svl);
+                    int th = (sh + sv);
+
+                    int ad;
+                    if (th > (tl * 5 / 2) || ((tl <= (avg_energy + 1)) || (th <= (avg_energy + 1)))) {
+                        ad = 0;
+                    } else if (tl > (th * 5 / 2)) {
+                        ad = abs(tl - avg_energy);
                     } else {
-                        tt >>= 2;
+                        ad = MAX(lowt, avg_energy);
                     }
-                    tt = (tt * 2 / 3);
-                    tt = (tt * q) >> DSV_MAX_QP_BITS;
-                    tt = CLAMP(tt, 0, fthresh);
-                    ihfilter4x4(dp, x, y, 0, tt, tt);
-                    ivfilter4x4(dp, x, y, 0, tt, tt);
-                    if (sh > sv) {
-                        tt = (3 * sh + sv);
-                    } else {
-                        tt = (3 * sv + sh);
-                    }
-                    tt = curve_tex(tt);
-                    tt = 16 + ((tt + 2) >> 2);
-                    tt = (tt * q) >> DSV_MAX_QP_BITS;
-                    tt = CLAMP(tt, 0, fthresh);
-                    ihfilter4x4(dp, x, y, 0, tt, tt);
-                    ivfilter4x4(dp, x, y, 0, tt, tt);
+                    tt = MIN(ad, fthresh);
+                    tcache[i] = clamp_u8(tt);
+                    ihfilter4x4(dp, x, y, tcache[i], tcache[i]);
                 }
             }
+        }
+        for (i = 0; i < nsbx; i++) {
+            int fx = i / FILTER_DIM;
+            int flags = fm->blockdata[fx + fy * p->nblocks_h];
+
+            x = i * FILTER_DIM;
+
+            if (!(flags & DSV_IS_RINGING) && tcache[i]) {
+                ivfilter4x4(dp, x, y, tcache[i], tcache[i]);
+            }
+        }
+    }
+    d28_free(tcache);
+}
+
+/* fast median of 9 values using network of 25 comparisons */
+static int
+median9(uint8_t *src, int x, int y, int stride)
+{
+    uint8_t v[9];
+
+    memcpy(v + 0, src + (x - 1) + (y - 1) * stride, 3 * sizeof(uint8_t));
+    memcpy(v + 3, src + (x - 1) + (y - 0) * stride, 3 * sizeof(uint8_t));
+    memcpy(v + 6, src + (x - 1) + (y + 1) * stride, 3 * sizeof(uint8_t));
+
+#define SORT2(a, b) do {\
+        if ((b) < (a)) {\
+            uint8_t t;  \
+            t = (a);    \
+            (a) = (b);  \
+            (b) = t;    \
+        }} while (0)
+
+    SORT2(v[0], v[3]);
+    SORT2(v[1], v[7]);
+    SORT2(v[2], v[5]);
+    SORT2(v[4], v[8]);
+    SORT2(v[0], v[7]);
+
+    SORT2(v[2], v[4]);
+    SORT2(v[3], v[8]);
+    SORT2(v[5], v[6]);
+    SORT2(v[0], v[2]);
+    SORT2(v[1], v[3]);
+
+    SORT2(v[4], v[5]);
+    SORT2(v[7], v[8]);
+    SORT2(v[1], v[4]);
+    SORT2(v[3], v[6]);
+    SORT2(v[5], v[7]);
+
+    SORT2(v[0], v[1]);
+    SORT2(v[2], v[4]);
+    SORT2(v[3], v[5]);
+    SORT2(v[6], v[8]);
+    SORT2(v[2], v[3]);
+
+    SORT2(v[4], v[5]);
+    SORT2(v[6], v[7]);
+    SORT2(v[1], v[2]);
+    SORT2(v[3], v[4]);
+    SORT2(v[5], v[6]);
+
+    return v[4];
+}
+
+static void
+filter_mc_err(uint8_t *src, int stride, int w, int h, int thresh)
+{
+    uint8_t tmp[(DSV_MAX_BLOCK_SIZE + 2) * (DSV_MAX_BLOCK_SIZE + 2)];
+    uint8_t *tmpp;
+    int src_w, src_h;
+    int x, y;
+
+    /* shouldn't happen but who knows... */
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    thresh = (48 - CLAMP(thresh, 0, 48));
+    if (thresh == 0) {
+        return;
+    }
+
+    src_w = w + 2;
+    src_h = h + 2;
+    tmpp = tmp + src_w + 1;
+
+    for (y = 0; y < src_h; y++) {
+        memcpy(tmp + y * src_w, src + (y - 1) * stride - 1, src_w);
+    }
+    /* this bad boy gets auto-vectorized (at least in clang) */
+    for (y = 0; y < h; y++) {
+        int top, cur, bot;
+
+        top = (y - 1) * src_w;
+        cur = (y + 0) * src_w;
+        bot = (y + 1) * src_w;
+
+        for (x = 0; x < w; x++) {
+            int c, l, r, u, d;
+            int lo, hi;
+            int str, med;
+
+            c = tmpp[cur + x];
+            l = tmpp[cur + x - 1];
+            r = tmpp[cur + x + 1];
+            u = tmpp[top + x];
+            d = tmpp[bot + x];
+
+            lo = MIN(l, r);
+            hi = MAX(l, r);
+
+            str = thresh;
+
+            if (c > lo && c < hi) {
+                lo = MIN(u, d);
+                hi = MAX(u, d);
+
+                if (c > lo && c < hi) {
+                    str >>= 1;
+                }
+            }
+            med = median9(tmpp, x, y, src_w);
+            src[y * stride + x] = clamp_u8(c + ((med - c) * str / 64));
         }
     }
 }
 
+#define EDGE_4x4        3
+#define EDGE_SUB        2
+#define EDGE_BLOCK      1
+#define EDGE_HALF_BIT   (1 << 2) /* 0 = left/top half, 1 = right/bottom half */
+
+static int
+classify_edge(int coord, int block_dim)
+{
+    if ((coord & (block_dim - 1)) == 0) {
+        /* on block boundary */
+        return EDGE_BLOCK;
+    }
+    if ((coord & ((block_dim / 2) - 1)) == 0) {
+        /* on subblock boundary AND NOT on block boundary */
+        return EDGE_SUB;
+    }
+    /* on 4x4 boundary AND NOT on block OR subblock boundary */
+    if ((coord & (block_dim - 1)) < (block_dim / 2)) {
+        return EDGE_4x4; /* left/top */
+    }
+    return EDGE_4x4 | EDGE_HALF_BIT; /* right/bottom */
+}
+
+static unsigned
+locate_subblock(int edgehh, int edgevv)
+{
+    switch (edgehh) {
+        case EDGE_BLOCK:
+        case EDGE_4x4:
+            return ((edgevv == EDGE_SUB || (edgevv & EDGE_HALF_BIT)) ? DSV_MASK_INTRA10 : DSV_MASK_INTRA00);
+        case EDGE_SUB:
+        case EDGE_4x4 | EDGE_HALF_BIT:
+            return ((edgevv == EDGE_SUB || (edgevv & EDGE_HALF_BIT)) ? DSV_MASK_INTRA11 : DSV_MASK_INTRA01);
+        default:
+            break;
+    }
+    DSV_ASSERT(0);
+    return 0;
+}
+
+#define F_BLOCK_UNALIGNED_W 1
+#define F_BLOCK_UNALIGNED_H 2
+#define F_BLOCK_BOTTOMMOST  4
+#define F_BLOCK_RIGHTMOST   8
+
+#define F_AUX_ND_MASK 0x1f /* mask to get neighbordif out of mv->aux */
+#define F_AUX_STR_H_SHIFT 10
+#define F_AUX_STR_V_SHIFT 8
+
 static void
-luma_filter(DSV_MV *vecs, int q, DSV_PARAMS *p, DSV_PLANE *dp, int do_filter)
+luma_filter(DSV_MV *vecs, int q, DSV_PARAMS *p, DSV_PLANE *dp)
 {
     int i, j, x, y;
     int nsbx, nsby;
-    int sharpen;
-#define NDCACHE_INVALID -1
-    /* x, y, neighbordif_x, neighbordif_y */
-    int cached[4] = { NDCACHE_INVALID, NDCACHE_INVALID, NDCACHE_INVALID, NDCACHE_INVALID };
-    int fthresh;
-
-    if (p->vidmeta->inter_sharpen) {
-        sharpen = p->temporal_mc; /* sharpen when the smoother half-pel filter was used */
-    } else {
-        sharpen = 0;
-    }
+    int fthreshE, fthreshF;
+    uint8_t *tcache = NULL;
+    int align_flags, pos_flags;
+    int psyf;
+    unsigned tq = (1 + DSV_MAX_QP) - q;
+    int logq = logb2(q);
+    int blkshift_h, blkshift_v;
     if (p->lossless) {
         return;
     }
     nsbx = dp->w / FILTER_DIM;
     nsby = dp->h / FILTER_DIM;
-    q = compute_filter_q(p, q);
-    fthresh = 32 * (14 - logb2(q));
-    for (j = 0; j < nsby; j++) {
-        int edgev, edgevs, fy;
+    blkshift_h = logb2(p->blk_w / FILTER_DIM);
+    blkshift_v = logb2(p->blk_h / FILTER_DIM);
+    align_flags = 0;
+    if (dp->w % p->blk_w) {
+        align_flags |= F_BLOCK_UNALIGNED_W;
+    }
+    if (dp->h % p->blk_h) {
+        align_flags |= F_BLOCK_UNALIGNED_H;
+    }
+    tcache = (uint8_t *) d28_alloc(nsbx * sizeof(*tcache));
+    if (tcache == NULL) {
+        DSV_ERROR(("out of memory"));
+    }
+    psyf = spatial_psy_factor(p, -1);
+    psyf = logb2(psyf >> 4);
+    fthreshE = (tq << 19) / (3 * tq * tq);
+    fthreshF = 32 - (flogb2(tq / 256) >> 3) / 6;
+    if (q < 128) {
+        fthreshE -= (128 - q) / 3;
+        fthreshF -= (128 - q) / 9;
+    }
+    fthreshE = CLAMP(fthreshE, 0, 0x7f);
+    fthreshF = CLAMP(fthreshF, 0, 0x7f);
+    for (j = 0; j < p->nblocks_v; j++) {
+        int errmvy = 0;
 
-        fy = (j * p->nblocks_v / nsby);
-        edgev = ((j * FILTER_DIM) % p->blk_h) == 0;
-        edgevs = ((j * FILTER_DIM) % (p->blk_h / 2)) == 0;
-        y = j * FILTER_DIM;
-        if ((y + FILTER_DIM) >= dp->h) {
-            continue;
+        pos_flags = align_flags;
+        if (j == (p->nblocks_v - 1)) {
+            pos_flags |= F_BLOCK_BOTTOMMOST;
         }
-        for (i = 0; i < nsbx; i++) {
-            int edgeh, edgehs, fx, ndx, ndy, amx, amy;
-            DSV_MV *mv;
-            uint8_t *dxy;
-
-            fx = (i * p->nblocks_h / nsbx);
-            edgeh = ((i * FILTER_DIM) % p->blk_w) == 0;
-            edgehs = ((i * FILTER_DIM) % (p->blk_w / 2)) == 0;
-            mv = &vecs[fx + fy * p->nblocks_h];
-
-            x = i * FILTER_DIM;
-
+        if ((pos_flags & (F_BLOCK_UNALIGNED_H | F_BLOCK_BOTTOMMOST)) == (F_BLOCK_UNALIGNED_H | F_BLOCK_BOTTOMMOST)) {
+            errmvy = -p->nblocks_h;
+        }
+        for (i = 0; i < p->nblocks_h; i++) {
+            DSV_MV *mv = &vecs[i + j * p->nblocks_h];
+            int nd, intra;
+            int errmvx = 0;
+            mv->aux = 0;
             if (DSV_MV_IS_SKIP(mv)) {
                 continue;
             }
-            if ((x + FILTER_DIM) >= dp->w) {
-                continue;
-            }
-
-            amx = abs(mv->u.mv.x);
-            amy = abs(mv->u.mv.y);
-
-            /* if current x,y is different than what was cached, update cache */
-            if (do_filter && (fx != cached[0] || fy != cached[1] || cached[2] == NDCACHE_INVALID || cached[3] == NDCACHE_INVALID)) {
-                neighdif2(vecs, p, fx, fy, &ndx, &ndy);
-
-                cached[0] = fx;
-                cached[1] = fy;
-                cached[2] = ndx;
-                cached[3] = ndy;
-            } else {
-                /* use cached value */
-                ndx = cached[2];
-                ndy = cached[3];
-            }
-
-            dxy = DSV_GET_XY(dp, x, y);
-            if (DSV_MV_IS_INTRA(mv)) {
-                int intra_threshH = ((64 * q) >> DSV_MAX_QP_BITS);
-                int intra_threshL = ((32 * q) >> DSV_MAX_QP_BITS);
-                int intra = DSV_MV_IS_INTRA(mv);
-                int tedgeh = edgeh;
-                int tedgev = edgev;
-                intra_threshH = CLAMP(intra_threshH, 2, 32);
-                intra_threshL = CLAMP(intra_threshL, 2, 32);
-                if (intra && mv->submask != DSV_MASK_ALL_INTRA) {
-                    tedgeh |= edgehs;
-                    tedgev |= edgevs;
+            intra = DSV_MV_IS_INTRA(mv);
+            nd = neighdif(vecs, p, i, j) >> psyf;
+            nd = logb2(CLAMP(nd, 0, 65535)) + p->vidmeta->filter_strength;
+            mv->aux = MAX(nd, 0);
+            if (i > 0) { /* left */
+                DSV_MV *leftmv = (mv - 1);
+                int str = 0;
+                if (intra || (leftmv->flags & ((1 << DSV_MV_BIT_INTRA) | (1 << DSV_MV_BIT_SKIP)))) {
+                    str++;
                 }
-                ihfilter4x4(dp, x, y, tedgeh, intra_threshH, intra_threshL);
-                ivfilter4x4(dp, x, y, tedgev, intra_threshH, intra_threshL);
-                continue;
+                if (DSV_IS_SUBPEL(leftmv)) {
+                    str++;
+                }
+                mv->aux |= str << F_AUX_STR_H_SHIFT;
             }
-            if (do_filter && (ndx || ndy)) {
-                int tt, addx, addy, sh, sv, shl, svl;
-                int intra = DSV_MV_IS_INTRA(mv);
-                int eprm = DSV_MV_IS_EPRM(mv);
-                int tedgeh = edgeh || eprm;
-                int tedgev = edgev || eprm;
-                int tndc;
-                if (intra && mv->submask != DSV_MASK_ALL_INTRA) {
-                    tedgeh |= edgehs;
-                    tedgev |= edgevs;
+            if (j > 0) { /* top */
+                DSV_MV *topmv = (mv - p->nblocks_h);
+                int str = 0;
+                if (intra || (topmv->flags & ((1 << DSV_MV_BIT_INTRA) | (1 << DSV_MV_BIT_SKIP)))) {
+                    str++;
                 }
-                tndc = (ndx + ndy + 1) >> 1;
-                artf4x4(dxy, dp->stride, &sh, &sv, &shl, &svl);
-
-                if (sh < 2 * sv && sv < 2 * sh) {
-                    int ix, iy;
-                    if (ndx < amx) {
-                        ndx >>= 1;
-                    }
-                    if (ndy < amy) {
-                        ndy >>= 1;
-                    }
-                    shl = (shl > 128) ? 0 : (128 - shl);
-                    svl = (svl > 128) ? 0 : (128 - svl);
-
-                    ix = MIN(amx, 32);
-                    iy = MIN(amy, 32);
-                    /* interpolate between lower freq and higher freq energies */
-                    tt  = ((sh * (32 - iy) + shl * iy) + 16) >> 5;
-                    tt += ((sv * (32 - ix) + svl * ix) + 16) >> 5;
-                    tt = (tt + 1) >> 1;
-                    if (ndx < amy && ndy < amx) { /* neighbordif not significant enough */
-                        tt = 0;
-                    }
-                } else {
-                    tt = (sh + sv + 1) >> 1;
+                if (DSV_IS_SUBPEL(topmv)) {
+                    str++;
                 }
-                tt = (tt * tndc + 4) >> 3;
-
-                tt = (MIN(tt, fthresh) * q) >> DSV_MAX_QP_BITS;
-                addx = (MIN(ndy, fthresh) * q) >> DSV_MAX_QP_BITS;
-                addy = (MIN(ndx, fthresh) * q) >> DSV_MAX_QP_BITS;
-
-                if (sh > 2 * sv || amy > 2 * amx) {
-                    ivfilter4x4(dp, x, y, tedgev, tt + addy, tt);
-                } else if (sv > 2 * sh || amx > 2 * amy) {
-                    ihfilter4x4(dp, x, y, tedgeh, tt + addx, tt);
-                } else {
-                    ihfilter4x4(dp, x, y, tedgeh, tt + addx, tt);
-                    ivfilter4x4(dp, x, y, tedgev, tt + addy, tt);
-                }
+                mv->aux |= str << F_AUX_STR_V_SHIFT;
             }
+            if (i == (p->nblocks_h - 1)) {
+                pos_flags |= F_BLOCK_RIGHTMOST;
+            }
+            /* mv error is unreliable on bottom/right edge blocks in frames whose width/height is not an exact multiple of the block's dimensions */
+            if ((pos_flags & (F_BLOCK_UNALIGNED_W | F_BLOCK_RIGHTMOST)) == (F_BLOCK_UNALIGNED_W | F_BLOCK_RIGHTMOST)) {
+                errmvx = -1;
+            }
+            mv->err[0] = clamp_u8(((mv + errmvx + errmvy)->err[0] << logq) >> 9);
 
-            if (sharpen && DSV_IS_DIAG(mv) && DSV_IS_QPEL(mv) && amx < 8 && amy < 8) {
-                degrad4x4(dxy, dp->stride);
+            x = i * p->blk_w;
+            y = j * p->blk_h;
+            if (mv->err[0]) {
+                filter_mc_err(DSV_GET_XY(dp, x, y), dp->stride, p->blk_w, p->blk_h, q / mv->err[0]);
             }
         }
     }
+    /* two horizontal passes to avoid step-like filtering artifacts */
+    for (j = 0; j < nsby; j++) {
+        DSV_MV *mvrow;
+        int edgevtype, fy;
+        fy = j >> blkshift_v;
+        y = j * FILTER_DIM;
+
+        edgevtype = classify_edge(y, p->blk_h);
+
+        mvrow = vecs + fy * p->nblocks_h;
+        for (i = 0; i < nsbx; i++) {
+            int edgehtype, fx, nd;
+            DSV_MV *mv;
+            int tt, ht = 0, vt = 0;
+
+            fx = i >> blkshift_h;
+            x = i * FILTER_DIM;
+            mv = mvrow + fx;
+            if (DSV_MV_IS_SKIP(mv)) {
+                continue;
+            }
+            edgehtype = classify_edge(x, p->blk_w);
+            nd = mv->aux & F_AUX_ND_MASK;
+
+            tt = mv->err[0];
+            if (DSV_MV_IS_INTRA(mv) && (mv->submask & locate_subblock(edgehtype, edgevtype))) {
+                tt += fthreshF;
+                tt = MIN(tt, fthreshE);
+                ht = tt;
+                vt = tt;
+            } else {
+                int edgeh, edgev;
+
+                edgeh = (edgehtype & ~EDGE_HALF_BIT) == EDGE_BLOCK;
+                edgev = (edgevtype & ~EDGE_HALF_BIT) == EDGE_BLOCK;
+
+                tt = (tt << nd) >> 4;
+                tt = MIN(tt, fthreshF);
+                ht = tt;
+                vt = tt;
+
+                if (edgeh || edgev) {
+                    int sh, sv, shl, svl, span;
+                    int strh, strv;
+                    strh = ((mv->aux >> F_AUX_STR_H_SHIFT) & 0x3);
+                    strv = ((mv->aux >> F_AUX_STR_V_SHIFT) & 0x3);
+
+                    haar2L(DSV_GET_XY(dp, x - 2, y - 2), dp->stride, &sh, &sv, &shl, &svl, &span);
+
+                    span *= 2;
+                    if (edgeh) {
+                        ht = ((abs(span - sh) + abs(span - shl) * 2) << (nd + strh)) >> 6;
+                        ht = MIN(ht, fthreshE);
+                    }
+                    if (edgev) {
+                        vt = ((abs(span - sv) + abs(span - svl) * 2) << (nd + strv)) >> 6;
+                        vt = MIN(vt, fthreshE);
+                    }
+                    if (sh > 2 * sv) {
+                        ht >>= 1;
+                    }
+                    if (sv > 2 * sh) {
+                        vt >>= 1;
+                    }
+                }
+            }
+            tcache[i] = vt;
+            ihfilter4x4(dp, x, y, ht, MIN(ht, fthreshF));
+        }
+        for (i = 0; i < nsbx; i++) {
+            DSV_MV *mv;
+            x = i * FILTER_DIM;
+            mv = mvrow + (i >> blkshift_h);
+            if (DSV_MV_IS_SKIP(mv)) {
+                continue;
+            }
+            ivfilter4x4(dp, x, y, tcache[i], MIN(tcache[i], fthreshF));
+        }
+    }
+    d28_free(tcache);
 }
 
 static void
 chroma_filter(DSV_MV *vecs, int q, DSV_PARAMS *p, DSV_PLANE *dp)
 {
-    int i, j, x, y, bw, bh, sh, sv;
-    int intra_thresh;
-    DSV_MV *mv;
+    int i, j, x, y, sh, sv;
+    int nsbx, nsby;
+    int align_flags, pos_flags;
+    int fthresh;
+    unsigned tq = (1 + DSV_MAX_QP) - q;
+    int logq = logb2(q);
+    int blkshift_h, blkshift_v;
 
-    sh = DSV_FORMAT_H_SHIFT(p->vidmeta->subsamp);
-    sv = DSV_FORMAT_V_SHIFT(p->vidmeta->subsamp);
-
-    bw = p->blk_w >> sh;
-    bh = p->blk_h >> sv;
     if (p->lossless) {
         return;
     }
-    intra_thresh = ((64 * q) >> DSV_MAX_QP_BITS);
-    intra_thresh = CLAMP(intra_thresh, 2, 32);
+    nsbx = dp->w / FILTER_DIM;
+    nsby = dp->h / FILTER_DIM;
 
+    sh = DSV_FORMAT_H_SHIFT(p->vidmeta->subsamp);
+    sv = DSV_FORMAT_V_SHIFT(p->vidmeta->subsamp);
+    blkshift_h = logb2((p->blk_w >> sh) / FILTER_DIM);
+    blkshift_v = logb2((p->blk_h >> sv) / FILTER_DIM);
+    align_flags = 0;
+    if (dp->w % p->blk_w) {
+        align_flags |= F_BLOCK_UNALIGNED_W;
+    }
+    if (dp->h % p->blk_h) {
+        align_flags |= F_BLOCK_UNALIGNED_H;
+    }
+    fthresh = (tq << 19) / (3 * tq * tq);
+    if (q < 128) {
+        fthresh -= (128 - q) / 3;
+    }
+    fthresh = CLAMP(fthresh * 2, 0, 0x7f);
     for (j = 0; j < p->nblocks_v; j++) {
-        y = j * bh;
+        int errmvy = 0;
+
+        pos_flags = align_flags;
+        if (j == (p->nblocks_v - 1)) {
+            pos_flags |= F_BLOCK_BOTTOMMOST;
+        }
+        if ((pos_flags & (F_BLOCK_UNALIGNED_H | F_BLOCK_BOTTOMMOST)) == (F_BLOCK_UNALIGNED_H | F_BLOCK_BOTTOMMOST)) {
+            errmvy = -p->nblocks_h;
+        }
         for (i = 0; i < p->nblocks_h; i++) {
-            x = i * bw;
+            DSV_MV *mv, *emv;
+            int errmvx = 0;
+            int thr, nd;
             mv = &vecs[i + j * p->nblocks_h];
-
-            if (!DSV_MV_IS_SKIP(mv)) {
-                int z, tx = intra_thresh, ty = intra_thresh;
-                if (!DSV_MV_IS_INTRA(mv)) {
-                    int ndx, ndy, amx, amy;
-                    neighdif2(vecs, p, i, j, &ndx, &ndy);
-                    amx = abs(mv->u.mv.x);
-                    amy = abs(mv->u.mv.y);
-                    if (ndx < amy && ndy < amx) { /* neighbordif not significant enough */
-                        tx = ty = 0;
-                    } else {
-                        tx = ndy;
-                        ty = ndx;
-                        tx = (MIN(tx, 64) * q) >> DSV_MAX_QP_BITS;
-                        ty = (MIN(ty, 64) * q) >> DSV_MAX_QP_BITS;
-                    }
-                }
-
-                /* only filtering top and left sides */
-                for (z = 0; z < bh; z += FILTER_DIM) {
-                    if ((y + z + FILTER_DIM) < dp->h) {
-                        ihfilter4x4(dp, x, y + z, 0, tx, tx);
-                    }
-                }
-                for (z = 0; z < bw; z += FILTER_DIM) {
-                    if ((x + z + FILTER_DIM) < dp->w) {
-                        ivfilter4x4(dp, x + z, y, 0, ty, ty);
-                    }
-                }
+            if (DSV_MV_IS_SKIP(mv)) {
+                continue;
             }
+            if (i == (p->nblocks_h - 1)) {
+                pos_flags |= F_BLOCK_RIGHTMOST;
+            }
+            /* mv error is unreliable on bottom/right edge blocks in frames whose width/height is not an exact multiple of the block's dimensions */
+            if ((pos_flags & (F_BLOCK_UNALIGNED_W | F_BLOCK_RIGHTMOST)) == (F_BLOCK_UNALIGNED_W | F_BLOCK_RIGHTMOST)) {
+                errmvx = -1;
+            }
+            emv = mv + errmvx + errmvy;
+            nd = mv->aux & F_AUX_ND_MASK;
+            thr = (((emv->err[1] << logq) >> 9) + 1) << nd;
+            mv->err[1] = MIN(thr, fthresh);
+            thr = (((emv->err[2] << logq) >> 9) + 1) << nd;
+            mv->err[2] = MIN(thr, fthresh);
+        }
+    }
+    /* two horizontal passes to avoid step-like filtering artifacts */
+    for (j = 0; j < nsby; j++) {
+        DSV_MV *mvrow;
+        int fy;
+        fy = j >> blkshift_v;
+        y = j * FILTER_DIM;
+
+        mvrow = vecs + fy * p->nblocks_h;
+        for (i = 0; i < nsbx; i++) {
+            DSV_MV *mv;
+            mv = mvrow + (i >> blkshift_h);
+            x = i * FILTER_DIM;
+            if (DSV_MV_IS_SKIP(mv)) {
+                continue;
+            }
+            ihfilter4x4(dp + 0, x, y, mv->err[1], mv->err[1] >> 2);
+            ihfilter4x4(dp + 1, x, y, mv->err[2], mv->err[2] >> 2);
+        }
+        for (i = 0; i < nsbx; i++) {
+            DSV_MV *mv;
+            mv = mvrow + (i >> blkshift_h);
+            x = i * FILTER_DIM;
+            if (DSV_MV_IS_SKIP(mv)) {
+                continue;
+            }
+            ivfilter4x4(dp + 0, x, y, mv->err[1], mv->err[1] >> 2);
+            ivfilter4x4(dp + 1, x, y, mv->err[2], mv->err[2] >> 2);
         }
     }
 }
@@ -2507,7 +2603,7 @@ luma_qp(uint8_t *dec, int ds,
         int bw, int bh,
         int dx, int dy, int tmc)
 {
-    static int16_t tbuf[(DSV_MAX_BLOCK_SIZE + 3) * DSV_MAX_BLOCK_SIZE];
+    int16_t tbuf[(DSV_MAX_BLOCK_SIZE + 3) * DSV_MAX_BLOCK_SIZE];
     int16_t *tmp;
     int x, y, a, b, c, d, f, large_mv, dqtx, dqty;
 #define BF_SHIFT  (DSV_HP_SHF + 1)
@@ -2637,11 +2733,11 @@ bilinear_sp(
 }
 
 static void
-reconstruct(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_PLANE *refp, DSV_PLANE *resp, DSV_PLANE *outp)
+predict(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_FRAME *ref, DSV_PLANE *dp)
 {
     int i, j, r, x, y, bw, bh, sh, sv, limx, limy;
+    DSV_PLANE *rp;
     DSV_MV *mv;
-    static uint8_t temp[DSV_MAX_BLOCK_SIZE * DSV_MAX_BLOCK_SIZE];
 
     if (c == 0) {
         sh = 0;
@@ -2653,22 +2749,16 @@ reconstruct(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_PLANE *refp, DSV_PLANE *resp
     bw = p->blk_w >> sh;
     bh = p->blk_h >> sv;
 
-    limx = (outp->w - bw) + DSV_FRAME_BORDER - 1;
-    limy = (outp->h - bh) + DSV_FRAME_BORDER - 1;
+    limx = (dp->w - bw) + DSV_FRAME_BORDER - 1;
+    limy = (dp->h - bh) + DSV_FRAME_BORDER - 1;
+    rp = ref->planes + c;
 
     for (j = 0; j < p->nblocks_v; j++) {
         y = j * bh;
         for (i = 0; i < p->nblocks_h; i++) {
-            int m, n;
             int px, py;
-            uint8_t *res, *out, *pred;
-
             x = i * bw;
             mv = &vecs[i + j * p->nblocks_h];
-
-            res = DSV_GET_XY(resp, x, y);
-            out = DSV_GET_XY(outp, x, y);
-            pred = temp;
 
             px = x + DSV_SAR(mv->u.mv.x, 2 + sh);
             py = y + DSV_SAR(mv->u.mv.y, 2 + sv);
@@ -2682,18 +2772,18 @@ reconstruct(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_PLANE *refp, DSV_PLANE *resp
                 py = CLAMP(py, -DSV_FRAME_BORDER, limy);
 
                 if (mv->submask == DSV_MASK_ALL_INTRA) {
-                    if (c == 0 && mv->dc) { /* DC is only for luma */
-                        avgc = mv->dc;
+                    if (c == 0 && (mv->dc & DSV_SRC_DC_PRED)) { /* DC is only for luma */
+                        avgc = mv->dc & 0xff;
                     } else {
-                        avgc = avgval(DSV_GET_XY(refp, px, py), refp->stride, bw, bh);
+                        avgc = avgval(DSV_GET_XY(rp, px, py), rp->stride, bw, bh);
                     }
-                    dec = temp;
+                    dec = DSV_GET_XY(dp, x, y);
                     for (r = 0; r < bh; r++) {
                         memset(dec, avgc, bw);
-                        dec += DSV_MAX_BLOCK_SIZE;
+                        dec += dp->stride;
                     }
                 } else {
-                    int f, g, sbw, sbh, mask_index;
+                    int f, g, sbx, sby, sbw, sbh, mask_index;
                     uint8_t masks[4] = {
                             DSV_MASK_INTRA00,
                             DSV_MASK_INTRA01,
@@ -2706,22 +2796,24 @@ reconstruct(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_PLANE *refp, DSV_PLANE *resp
 
                     for (g = 0; g <= sbh; g += (sbh + !sbh)) {
                         for (f = 0; f <= sbw; f += (sbw + !sbw)) {
-                            dec = temp + f + g * DSV_MAX_BLOCK_SIZE;
+                            sbx = x + f;
+                            sby = y + g;
                             if (mv->submask & masks[mask_index]) {
-                                if (c == 0 && mv->dc) { /* DC is only for luma */
-                                    avgc = mv->dc;
+                                if (c == 0 && (mv->dc & DSV_SRC_DC_PRED)) { /* DC is only for luma */
+                                    avgc = mv->dc & 0xff;
                                 } else {
-                                    avgc = avgval(DSV_GET_XY(refp, px + f, py + g), refp->stride, sbw, sbh);
+                                    avgc = avgval(DSV_GET_XY(rp, px + f, py + g), rp->stride, sbw, sbh);
                                 }
 
+                                dec = DSV_GET_XY(dp, sbx, sby);
                                 for (r = 0; r < sbh; r++) {
                                     memset(dec, avgc, sbw);
-                                    dec += DSV_MAX_BLOCK_SIZE;
+                                    dec += dp->stride;
                                 }
                             } else {
-                                cpyblk(dec,
-                                       DSV_GET_XY(refp, px + f, py + g),
-                                       DSV_MAX_BLOCK_SIZE, refp->stride, sbw, sbh);
+                                cpyblk(DSV_GET_XY(dp, sbx, sby),
+                                       DSV_GET_XY(rp, px + f, py + g),
+                                       dp->stride, rp->stride, sbw, sbh);
                             }
                             mask_index++;
                         }
@@ -2733,51 +2825,91 @@ reconstruct(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_PLANE *refp, DSV_PLANE *resp
                     if (!DSV_IS_SUBPEL(mv)) {
                         px = CLAMP(px, -DSV_FRAME_BORDER, limx);
                         py = CLAMP(py, -DSV_FRAME_BORDER, limy);
-                        cpyblk(temp, DSV_GET_XY(refp, px, py), DSV_MAX_BLOCK_SIZE, refp->stride, bw, bh);
+                        cpyblk(DSV_GET_XY(dp, x, y), DSV_GET_XY(rp, px, py), dp->stride, rp->stride, bw, bh);
                     } else {
                         px = CLAMP(px - 1, -DSV_FRAME_BORDER, limx);
                         py = CLAMP(py - 1, -DSV_FRAME_BORDER, limy);
-                        luma_qp(temp, DSV_MAX_BLOCK_SIZE,
-                                DSV_GET_XY(refp, px, py), refp->stride,
+                        luma_qp(DSV_GET_XY(dp, x, y), dp->stride,
+                                DSV_GET_XY(rp, px, py), rp->stride,
                                 bw, bh, mv->u.mv.x, mv->u.mv.y, p->temporal_mc);
                     }
                 } else {
                     px = CLAMP(px, -DSV_FRAME_BORDER, limx);
                     py = CLAMP(py, -DSV_FRAME_BORDER, limy);
-                    bilinear_sp(temp, DSV_MAX_BLOCK_SIZE, DSV_GET_XY(refp, px, py), refp->stride, bw, bh, mv->u.mv.x, mv->u.mv.y, sh, sv);
+                    bilinear_sp(DSV_GET_XY(dp, x, y), dp->stride, DSV_GET_XY(rp, px, py), rp->stride, bw, bh, mv->u.mv.x, mv->u.mv.y, sh, sv);
                 }
             }
-            pred = temp;
+        }
+    }
+}
+
+static void
+reconstruct(DSV_MV *vecs, DSV_PARAMS *p, int c, DSV_PLANE *resp, DSV_PLANE *predp, DSV_PLANE *outp)
+{
+    int i, j, x, y, bw, bh, areashift, sh, sv;
+    DSV_MV *mv;
+
+    if (c == 0) {
+        sh = 0;
+        sv = 0;
+    } else {
+        sh = DSV_FORMAT_H_SHIFT(p->vidmeta->subsamp);
+        sv = DSV_FORMAT_V_SHIFT(p->vidmeta->subsamp);
+    }
+    bw = p->blk_w >> sh;
+    bh = p->blk_h >> sv;
+    areashift = logb2(bw * bh);
+
+    for (j = 0; j < p->nblocks_v; j++) {
+        y = j * bh;
+        for (i = 0; i < p->nblocks_h; i++) {
+            int m, n;
+            uint8_t *res, *pred, *out;
+
+            x = i * bw;
+            mv = &vecs[i + j * p->nblocks_h];
+
+            res = DSV_GET_XY(resp, x, y);
+            pred = DSV_GET_XY(predp, x, y);
+            out = DSV_GET_XY(outp, x, y);
             if (p->lossless) {
                 for (n = 0; n < bh; n++) {
                     for (m = 0; m < bw; m++) {
                         out[m] = (pred[m] + res[m] - 128);
                     }
-                    out += outp->stride;
-                    pred += DSV_MAX_BLOCK_SIZE;
+                    pred += predp->stride;
                     res += resp->stride;
+                    out += outp->stride;
                 }
             } else {
                 /* D.4 Reconstruction */
                 if (!DSV_MV_IS_EPRM(mv) || (!DSV_MV_IS_INTRA(mv) && DSV_MV_IS_SKIP(mv))) {
+                    unsigned lerr = 0;
                     for (n = 0; n < bh; n++) {
                         for (m = 0; m < bw; m++) {
+                            int true_resid = res[m] - 128;
+                            lerr += abs(true_resid);
                             /* source = (prediction + residual) */
-                            out[m] = clamp_u8(pred[m] + res[m] - 128);
+                            out[m] = clamp_u8(pred[m] + true_resid);
                         }
-                        out += outp->stride;
-                        pred += DSV_MAX_BLOCK_SIZE;
+                        pred += predp->stride;
                         res += resp->stride;
+                        out += outp->stride;
                     }
+                    mv->err[c] = lerr >> areashift;
                 } else {
+                    unsigned lerr = 0;
                     for (n = 0; n < bh; n++) {
                         for (m = 0; m < bw; m++) {
-                            out[m] = clamp_u8(pred[m] + (res[m] - 128) * 2);
+                            int true_resid = 2 * (res[m] - 128);
+                            lerr += abs(true_resid);
+                            out[m] = clamp_u8(pred[m] + true_resid);
                         }
-                        out += outp->stride;
-                        pred += DSV_MAX_BLOCK_SIZE;
+                        pred += predp->stride;
                         res += resp->stride;
+                        out += outp->stride;
                     }
+                    mv->err[c] = lerr >> areashift;
                 }
             }
         }
@@ -2794,12 +2926,13 @@ add_pred(DSV_MV *mv, DSV_FMETA *fm, int q, DSV_FRAME *resd, DSV_FRAME *out, DSV_
         rp = resd->planes + c;
         op = out->planes + c;
 
-        reconstruct(mv, fm->params, c, ref->planes + c, rp, op);
-        if (c == 0) {
-            luma_filter(mv, q, fm->params, op, do_filter);
-        } else {
-            chroma_filter(mv, q, fm->params, op);
-        }
+        predict(mv, fm->params, c, ref, op); /* make prediction onto temp frame (out) */
+        reconstruct(mv, fm->params, c, rp, op, op);
+    }
+    if (do_filter) {
+        d28_extend_frame(out);
+        luma_filter(mv, q, fm->params, out->planes + 0);
+        chroma_filter(mv, q, fm->params, out->planes + 1);
     }
 }
 
@@ -2809,7 +2942,6 @@ add_pred(DSV_MV *mv, DSV_FMETA *fm, int q, DSV_FRAME *resd, DSV_FRAME *out, DSV_
 
 #define EOP_SYMBOL 0x55 /* B.2.3.5 Image Data - Coefficient Coding */
 
-#define MAXLVL   3
 #define NSUBBAND 4 /* 0 = LL, 1 = LH, 2 = HL, 3 = HH */
 
 #define MINQP    3
@@ -2838,152 +2970,49 @@ dimat(int level, int v) /* dimension at level */
     return DSV_ROUND_SHIFT(v, MAXLVL - level);
 }
 
-static int
-fix_quant(int q)
-{
-    return q * 3 / 2;
-}
-
-static int
-lfquant(int q, DSV_FMETA *fm)
-{
-    int psyfac;
-
-    psyfac = spatial_psy_factor(fm->params, SB_HH);
-
-    q -= (q * psyfac >> (7 + 3));
-    q = MAX(q, MINQUANT);
-    /* prevent important lower level coefficients from getting destroyed */
-    if (fm->cur_plane) {
-        if (q > 256) {
-            q = 256 + q / 4;
-        }
-        return MIN(q, 768);
-    }
-    return MIN(q, 3072);
-}
-
-static int
-hfquant(DSV_FMETA *fm, int q, int s, int l)
-{
-    int psyfac, chroma;
-
-    chroma = (fm->cur_plane != 0);
-    psyfac = spatial_psy_factor(fm->params, s);
-    q /= 2;
-
-    psyfac = q * psyfac >> (7 + (fm->isP ? 0 : 1));
-
-    if (chroma) {
-        /* reduce based on subsampling */
-        int tl;
-        tl = l - 2;
-        if (s == SB_LH) {
-            tl += DSV_FORMAT_H_SHIFT(fm->params->vidmeta->subsamp);
-        } else if (s == SB_HL) {
-            tl += DSV_FORMAT_V_SHIFT(fm->params->vidmeta->subsamp);
-        }
-        q = (q * 6) / (4 - tl);
-    } else {
-        /* reduce higher frequencies appropriately */
-        if (l == (MAXLVL - 2)) {
-            q += psyfac / 2;
-        } else if (l == (MAXLVL - 1)) {
-            q += psyfac;
-        }
-    }
-
-    if (fm->isP) {
-        if (l != (MAXLVL - 1)) {
-            if (l == (MAXLVL - 3)) {
-                q *= 2;
-                q -= psyfac;
-            } else {
-                q -= psyfac / 2;
-            }
-        }
-        return MAX(q / 4, MINQUANT);
-    }
-    q = q * (15 + 3 * l) / 16;
-    if (!chroma) {
-        if (l == (MAXLVL - 3)) { /* luma level 3 (Haar) needs to be quantized less */
-            q = (q * 3) / 8;
-        } else if (s == SB_HH) { /* quantize HH more */
-            q *= 2;
-        }
-    } else {
-        q /= 4;
-        if (s == SB_HH) { /* quantize HH more */
-            q *= 2;
-        }
-    }
-    return MAX(q, MINQUANT);
-}
-
-#define TMQ4POS_P(tmq, flags)                                     \
-    if (parc || (((flags) & (DSV_IS_STABLE | DSV_IS_EPRM)))) {    \
-        tmq = (tmq) * 7 >> 3;                                     \
-    } else if (!parc && ((flags) & DSV_IS_INTRA)) {               \
-        tmq = (tmq) * 6 >> 3;                                     \
-    }
-
-#define TMQ4POS_I(tmq, flags, l)                                         \
-        switch (l) {                                                     \
-            case MAXLVL - 3:                                             \
-                break;                                                   \
-            default:                                                     \
-            case MAXLVL - 2:                                             \
-                switch ((flags) & (DSV_IS_STABLE | DSV_IS_MAINTAIN)) {   \
-                    case DSV_IS_STABLE:                                  \
-                        tmq /= 3;                                        \
-                        break;                                           \
-                    case DSV_IS_MAINTAIN:                                \
-                        tmq >>= (((flags) & DSV_IS_RINGING) ? 2 : !parc);\
-                        break;                                           \
-                    case DSV_IS_MAINTAIN | DSV_IS_STABLE:                \
-                        tmq >>= 2;                                       \
-                        break;                                           \
-                    default:                                             \
-                        break;                                           \
-                }                                                        \
-                break;                                                   \
-            case MAXLVL - 1:                                             \
-                switch ((flags) & (DSV_IS_STABLE | DSV_IS_MAINTAIN)) {   \
-                    case DSV_IS_STABLE:                                  \
-                        tmq >>= 2;                                       \
-                        break;                                           \
-                    case DSV_IS_MAINTAIN:                                \
-                        tmq >>= (((flags) & DSV_IS_RINGING) ? 2 : !parc);\
-                        break;                                           \
-                    case DSV_IS_MAINTAIN | DSV_IS_STABLE:                \
-                        tmq >>= 2 + !parc;                               \
-                        break;                                           \
-                    default:                                             \
-                        break;                                           \
-                }                                                        \
-                break;                                                   \
+#define TMQ4POS_I(tmq, flags, l)                                            \
+        switch (l) {                                                        \
+            case MAXLVL - 3:                                                \
+                break;                                                      \
+            default:                                                        \
+            case MAXLVL - 2:                                                \
+                switch ((flags) & (DSV_IS_STABLE | DSV_IS_MAINTAIN)) {      \
+                    case DSV_IS_STABLE:                                     \
+                        if (!parc) { tmq = tmq * 2 / 5; } else { tmq /= 3; }\
+                        break;                                              \
+                    case DSV_IS_MAINTAIN:                                   \
+                        tmq >>= (((flags) & DSV_IS_RINGING) ?  2 : !parc);  \
+                        break;                                              \
+                    case DSV_IS_MAINTAIN | DSV_IS_STABLE:                   \
+                        if (parc) { tmq /= 4; } else { tmq /= 6; }          \
+                        break;                                              \
+                    default:                                                \
+                        break;                                              \
+                }                                                           \
+                break;                                                      \
+            case MAXLVL - 1:                                                \
+                switch ((flags) & (DSV_IS_STABLE | DSV_IS_MAINTAIN)) {      \
+                    case DSV_IS_STABLE:                                     \
+                        if (!parc) { tmq /= 3; } else { tmq /= 4; }         \
+                        break;                                              \
+                    case DSV_IS_MAINTAIN:                                   \
+                        tmq >>= (((flags) & DSV_IS_RINGING) ? 2 : !parc);   \
+                        break;                                              \
+                    case DSV_IS_MAINTAIN | DSV_IS_STABLE:                   \
+                        if (parc) { tmq /= 6; } else { tmq /= 8; }          \
+                        break;                                              \
+                    default:                                                \
+                        break;                                              \
+                }                                                           \
+                break;                                                      \
         }
 
 
-#define dequantL(v,q) (isP ? dequantD(v,q) : dequantS(v,q))
-#define dequantH(v,q) (dequantD(v, q))
+#define dequantU(v, q) ((v) * 2 * (q)) /* uniform */
+#define dequantDZ(v, q) ((q) * ((v) * 2 + ((v) >= 0 ? 1 : -1))) /* deadzone */
+#define dequant(v, q, isP) (isP ? dequantDZ(v,q) : dequantU(v,q))
 
-/* uses estimator which saturates the value more */
-static DSV_SBC
-dequantS(int v, unsigned q)
-{
-    return (v * q) + ((v < 0) ? -(q * 2 / 3) : (q * 2 / 3));
-}
-
-/* default estimator */
-static DSV_SBC
-dequantD(int v, unsigned q)
-{
-    return (v * q) + ((v < 0) ? -(q / 2) : (q / 2));
-}
-
-#define DAMP (3 + l)
-#define GETV(bs)     (bs_get_nrice(bs, &vk, DAMP))
+#define GETV(bs)     (bs_get_nrice(bs, &vk, &vavg))
 
 static void
 hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
@@ -2999,19 +3028,18 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
     int w = dst->width;
     int h = dst->height;
     int isP;
-    int vk = 0;
+    unsigned vk = 0, vavg = 0; /* for Rice decoding */
 
     bs_align(bs);
     runs = bs_get_bits(bs, RUN_BITS);
     bs_align(bs);
 
-    q = fix_quant(q);
     s = l = 0;
     isP = fm->isP;
 
     sw = dimat(l, w);
     sh = dimat(l, h);
-    qp = lfquant(q, fm);
+    qp = lfquant(fm, q);
 
     o = subband(l, s, w, h);
     outp = out + o;
@@ -3019,6 +3047,7 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
     run = (runs-- > 0) ? bs_get_ueg(bs) : INT_MAX;
 
     if (fm->params->lossless) {
+        /* C.2.3 LL Subband */
         for (y = 0; y < sh; y++) {
             for (x = 0; x < sw; x++) {
                 if (!run--) {
@@ -3035,6 +3064,7 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
         for (l = 0; l < MAXLVL; l++) {
             sw = dimat(l, w);
             sh = dimat(l, h);
+            /* C.2.4 Higher Level Subband Dequantization */
             for (s = 1; s < NSUBBAND; s++) {
                 o = subband(l, s, w, h);
                 outp = out + o;
@@ -3054,6 +3084,7 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
             }
         }
     } else {
+        /* C.2.3 LL Subband */
         for (y = 0; y < sh; y++) {
             for (x = 0; x < sw; x++) {
                 if (!run--) {
@@ -3062,7 +3093,7 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
                     if (bs_ptr(bs) >= bufsz) {
                         return;
                     }
-                    outp[x] = dequantL(v, qp);
+                    outp[x] = dequant(v, qp, isP);
                 }
             }
             outp += w;
@@ -3076,6 +3107,7 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
             dbx = (fm->params->nblocks_h << DSV_BLOCK_INTERP_P) / sw;
             dby = (fm->params->nblocks_v << DSV_BLOCK_INTERP_P) / sh;
             qp = q;
+            /* C.2.4 Higher Level Subband Dequantization */
             for (s = 1; s < NSUBBAND; s++) {
                 int par;
                 par = subband(l - 1, s, w, h);
@@ -3091,19 +3123,17 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
                     for (x = 0; x < sw; x++) {
                         if (!run--) {
                             int tmq = qp;
-                            int flags = blockrow[bx >> DSV_BLOCK_INTERP_P];
-                            int parc = parent[x >> 1];
                             v = GETV(bs);
                             run = (runs-- > 0) ? bs_get_ueg(bs) : INT_MAX;
                             if (bs_ptr(bs) >= bufsz) {
                                 return;
                             }
-                            if (isP) {
-                                TMQ4POS_P(tmq, flags);
-                            } else {
+                            if (!isP) {
+                                int flags = blockrow[bx >> DSV_BLOCK_INTERP_P];
+                                int parc = parent[x >> 1];
                                 TMQ4POS_I(tmq, flags, l);
                             }
-                            outp[x] = dequantH(v, tmq);
+                            outp[x] = dequant(v, tmq, isP);
                         }
                         bx += dbx;
                     }
@@ -3185,10 +3215,11 @@ decode_packet_hdr(DSV_BS *bs)
 }
 
 /* B.2.1 Metadata Packet */
-static void
+static int
 decode_meta(DSV_DECODER *d, DSV_BS *bs)
 {
     DSV_META *fmt = &d->vidmeta;
+    int w, h;
 
     fmt->width = bs_get_ueg(bs);
     fmt->height = bs_get_ueg(bs);
@@ -3205,13 +3236,45 @@ decode_meta(DSV_DECODER *d, DSV_BS *bs)
     fmt->aspect_den = bs_get_ueg(bs);
     DSV_DEBUG(("aspect ratio %d/%d", fmt->aspect_num, fmt->aspect_den));
 
-    fmt->inter_sharpen = bs_get_ueg(bs);
-    DSV_DEBUG(("inter sharpen %d", fmt->inter_sharpen));
+    fmt->filter_strength = bs_get_ueg(bs);
+    fmt->filter_strength = DSV_U2S(fmt->filter_strength);
+    DSV_DEBUG(("filter strength %d", fmt->filter_strength));
     if (bs_get_bit(bs)) {
         fmt->reserved = bs_get_bits(bs, 15);
+        if (fmt->reserved & DSV_META_COLORSPACE_BIT) {
+            fmt->colorspace = bs_get_bits(bs, 4);
+            fmt->colorspace |= bs_get_bit(bs) * DSV_COLORSPACE_FULLRANGE;
+            DSV_DEBUG(("colorspace %d", fmt->colorspace));
+            DSV_DEBUG(("fullrange %d", !!(fmt->colorspace & DSV_COLORSPACE_FULLRANGE)));
+        } else {
+            fmt->colorspace = DSV_COLORSPACE_BT601;
+        }
     } else {
         fmt->reserved = 0;
     }
+    /* validation */
+    w = fmt->width;
+    h = fmt->height;
+    if (w <= 0 || h <= 0) {
+        DSV_ERROR(("given dimensions were strange: %dx%d", w, h));
+        return 0;
+    }
+    if (w < 64 || h < 64) {
+        DSV_ERROR(("DSV2 does not support dimensions < 64: %dx%d", w, h));
+        return 0;
+    }
+    if ((w & 1) || (h & 1)) {
+        DSV_ERROR(("DSV2 does not support odd dimensions: %dx%d", w, h));
+        return 0;
+    }
+    if ((w * h) >= (4096 * 4096)) {
+        DSV_WARNING(("video dimensions %dx%d exceed what DSV2 is designed to handle, expect decoding issues!", w, h));
+    }
+    if (fmt->filter_strength < DSV_MIN_FILTER_STR || fmt->filter_strength > DSV_MAX_FILTER_STR) {
+        /* a bit more serious than the dimensions being large */
+        DSV_ERROR(("filter strength was strange: %d, expect decoding issues!.", fmt->filter_strength));
+    }
+    return 1;
 }
 
 /* B.2.3.4 Motion Data */
@@ -3273,7 +3336,7 @@ decode_motion(DSV_IMAGE *img, DSV_MV *mvs, DSV_BS *inbs, DSV_BUF *buf, int *stat
                 img->blockdata[idx] &= ~(1 << DSV_STABLE_BIT);
                 img->blockdata[idx] |= eprm << DSV_EPRM_BIT;
 
-                mv_pred(mvs, params, i, j, &px, &py);
+                movec_pred(mvs, params, i, j, &px, &py);
                 if (DSV_MV_IS_INTRA(mv)) {
                     px = DSV_SAR_R(px, 2);
                     py = DSV_SAR_R(py, 2);
@@ -3297,10 +3360,6 @@ decode_motion(DSV_IMAGE *img, DSV_MV *mvs, DSV_BS *inbs, DSV_BUF *buf, int *stat
                     }
                     img->blockdata[idx] |= DSV_IS_INTRA;
                 }
-                if (neighdif(mvs, params, i, j) > DSV_NDIF_THRESH) {
-                    img->blockdata[idx] |= (1 << DSV_STABLE_BIT);
-                }
-
             }
         }
     }
@@ -3397,10 +3456,20 @@ img_unref(DSV_IMAGE *img)
 }
 
 extern void
+d28_dec_init(DSV_DECODER *d)
+{
+    memset(d, 0, sizeof(*d));
+}
+
+extern void
 d28_dec_free(DSV_DECODER *d)
 {
     if (d->ref) {
         img_unref(d->ref);
+    }
+    if (d->transform_buf) {
+        d28_free(d->transform_buf);
+        d->transform_buf = NULL;
     }
 }
 
@@ -3409,7 +3478,7 @@ d28_get_metadata(DSV_DECODER *d)
 {
     DSV_META *meta;
 
-    meta = (DSV_META*) d28_alloc(sizeof(DSV_META));
+    meta = (DSV_META *) d28_alloc(sizeof(DSV_META));
     memcpy(meta, &d->vidmeta, sizeof(DSV_META));
 
     return meta;
@@ -3421,7 +3490,7 @@ d28_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
     DSV_BS bs;
     DSV_IMAGE *img;
     DSV_PARAMS *p;
-    int i, quant, is_ref, has_ref, pkt_type, subsamp, do_filter;
+    int i, quant, is_ref, pkt_type, subsamp, do_filter;
     DSV_META *meta = &d->vidmeta;
     DSV_FRAME *residual;
     DSV_MV *mvs = NULL;
@@ -3429,6 +3498,8 @@ d28_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
     DSV_FMETA fm;
     int stats[DSV_MAX_STAT];
     DSV_COEFS coefs[3];
+    unsigned xf_buf_sz;
+    int has_ref;
 
     *fn = -1;
 
@@ -3445,9 +3516,12 @@ d28_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
         switch (pkt_type) {
             case DSV_PT_META:
                 DSV_DEBUG(("decoding metadata"));
-                decode_meta(d, &bs);
-                d->got_metadata = 1;
-                ret = DSV_DEC_GOT_META;
+                if (decode_meta(d, &bs)) {
+                    d->got_metadata = 1;
+                    ret = DSV_DEC_GOT_META;
+                } else {
+                    ret = DSV_DEC_ERROR;
+                }
                 break;
             case DSV_PT_EOS:
                 DSV_DEBUG(("decoding end of stream"));
@@ -3464,7 +3538,7 @@ d28_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
         return DSV_DEC_OK;
     }
 
-    img = (DSV_IMAGE*) d28_alloc(sizeof(DSV_IMAGE));
+    img = (DSV_IMAGE *) d28_alloc(sizeof(DSV_IMAGE));
     img->refcount = 1;
 
     img->params.vidmeta = meta;
@@ -3508,6 +3582,7 @@ d28_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
     }
     do_filter = bs_get_bit(&bs);
     quant = bs_get_bits(&bs, DSV_MAX_QP_BITS);
+    d->quant = quant;
     p->lossless = (quant == 1);
     if (bs_get_bit(&bs)) {
         p->reserved = bs_get_bits(&bs, 15);
@@ -3516,10 +3591,10 @@ d28_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
     }
     bs_align(&bs);
     /* read frame metadata (stability / skip, motion data / adaptive quant) */
-    img->blockdata = (uint8_t*) d28_alloc(p->nblocks_h * p->nblocks_v);
+    img->blockdata = (uint8_t *) d28_alloc(p->nblocks_h * p->nblocks_v);
     decode_stability_blocks(img, &bs, buffer, has_ref, stats);
     if (has_ref) {
-        mvs = (DSV_MV*) d28_alloc(sizeof(DSV_MV) * p->nblocks_h * p->nblocks_v);
+        mvs = (DSV_MV *) d28_alloc(sizeof(DSV_MV) * p->nblocks_h * p->nblocks_v);
         decode_motion(img, mvs, &bs, buffer, stats);
     } else {
         decode_intra_meta(img, &bs, buffer, stats);
@@ -3533,6 +3608,22 @@ d28_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
     fm.blockdata = img->blockdata;
     fm.isP = has_ref;
     fm.fnum = fno;
+
+    /* (re)allocate if image is larger than what we currently have allocated */
+    xf_buf_sz = ((meta->width + 2) * (meta->height + 2)) + MAX(meta->width, meta->height);
+    if (d->transform_buf_sz < xf_buf_sz) {
+        d->transform_buf_sz = xf_buf_sz;
+        if (d->transform_buf) {
+            d28_free(d->transform_buf);
+            d->transform_buf = NULL;
+        }
+        d->transform_buf = (DSV_SBC *) d28_alloc(d->transform_buf_sz * sizeof(DSV_SBC));
+        if (d->transform_buf == NULL) {
+            DSV_ERROR(("out of memory"));
+        }
+    }
+    fm.transform_buf = d->transform_buf;
+
     /* B.2.3.5 Image Data - Plane Decoding */
     mk_coefs(coefs, subsamp, meta->width, meta->height);
 
