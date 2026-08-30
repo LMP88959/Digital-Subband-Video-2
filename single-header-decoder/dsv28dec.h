@@ -2348,8 +2348,7 @@ luma_filter(DSV_MV *vecs, int q, DSV_PARAMS *p, DSV_PLANE *dp)
     if (tcache == NULL) {
         DSV_ERROR(("out of memory"));
     }
-    psyf = spatial_psy_factor(p, -1);
-    psyf = logb2(psyf >> 4);
+    psyf = dsv_spatial_psy_factor(p, -1) >= 32;
     fthreshE = (tq << 19) / (3 * tq * tq);
     fthreshF = 32 - (flogb2(tq / 256) >> 3) / 6;
     if (q < 128) {
