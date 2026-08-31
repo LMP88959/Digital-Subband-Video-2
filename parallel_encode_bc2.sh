@@ -37,8 +37,8 @@ enc_chunk() {
     ((end=start+chunk))
 	endtime=$(printf '%.6f' "$(echo "$end / $framerate" | bc -l)")
 			
-	countA=$(ffmpeg -t $starttime -i $video -nostats -vcodec copy -y -f rawvideo /dev/null 2>&1 | grep frame | awk '{print $2}')
-	countB=$(ffmpeg -t $endtime -i $video -nostats -vcodec copy -y -f rawvideo /dev/null 2>&1 | grep frame | awk '{print $2}')
+	countA=$(ffmpeg -t $starttime -i $video -hide_banner -nostats -vcodec copy -y -f rawvideo /dev/null 2>&1 | grep frame | awk '{print $2}')
+	countB=$(ffmpeg -t $endtime -i $video -hide_banner -nostats -vcodec copy -y -f rawvideo /dev/null 2>&1 | grep frame | awk '{print $2}')
     ((nframes=countB-countA))
 	startflag=""
 	if [ "$(echo "$starttime > 0" | bc)" -eq 1 ]; then
