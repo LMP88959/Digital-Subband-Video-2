@@ -262,15 +262,15 @@ intra_metr_wxh(uint8_t *a, int as, int dc, int w, int h, PSY_COEFS *psy)
             a2 = *acur++;
             a3 = *anxt++;
             a4 = *anxt++;
-            s0 = ((unsigned) ((a1) + (a2) + (a3) + (a4) + 2) >> 2);
+            s0 = DSV_UAVG4(a1, a2, a3, a4);
             s1 = dc;
             {
                 int ta, se;/* texture in block A, ~ block B, squared error */
-                se = ((unsigned) ((((a1 - dc) * (a1 - dc))) + ((a2 - dc) * (a2 - dc)) + ((a3 - dc) * (a3 - dc)) + ((a4 - dc) * (a4 - dc)) + 2) >> 2);
-                ta = (((a1 - a2) + (a3 - a4) + (a3 - a1) + (a4 - a2)) / 4);
+                se = ((unsigned) (SQR(a1 - dc) + SQR(a2 - dc) + SQR(a3 - dc) + SQR(a4 - dc) + 2) >> 2);
+                ta = AVG4((a1 - a2), (a3 - a4), (a3 - a1), (a4 - a2));
                 acc += se << psy->err_weight;
-                acc += (ta * ta) << psy->tex_weight;
-                acc += ((s0 - s1) * (s0 - s1)) << psy->avg_weight;
+                acc += SQR(ta) << psy->tex_weight;
+                acc += SQR(s0 - s1) << psy->avg_weight;
             };
         }
         a += 2 * as;
@@ -812,7 +812,7 @@ haar_energy(DSV_HME *hme, uint8_t *a, int as, uint8_t *b, int bs, int w, int h,
     w += oddw;
     h += oddh;
     d = temp_src;
-    /* technically we should be checking EPRM versions here if EPRM... TODO */
+
     if (intra >= 0) {
         for (y = 0; y < h - oddh; y++) {
             for (x = 0; x < w - oddw; x++) {
