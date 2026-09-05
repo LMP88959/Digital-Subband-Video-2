@@ -175,6 +175,21 @@ Discord: https://discord.gg/hdYctSmyQJ
 itch.io: https://kingscrook.itch.io/kings-crook
 
 ------
+
+## The BC2 Color Space
+
+A pseudo-perceptual color space designed to be faster than existing perceptual color spaces while also demonstrating more appealing subsampling and quantization artifacts compared to typical YCbCr.  
+It can easily be used as a drop-in replacement for 8-bit YUV, the image/video viewer just needs to know how to decode BC2, see the `bc2` directory in the repository to learn more!  
+
+Original vs YCbCr 4:2:0 @ 132kb vs BC2 4:2:0 @ 130kb **(click to expand/download)**:  
+
+<img width="256" height="256" alt="crazy" src="https://github.com/user-attachments/assets/659a1bbb-d605-4935-97c7-9a636da4d2cb" />
+<img width="256" height="256" alt="test_dsv2_latest_132kb" src="https://github.com/user-attachments/assets/c8414413-9054-47d6-abd6-0609fac015a4" />
+<img width="256" height="256" alt="test_dsv2_bc2_130kb" src="https://github.com/user-attachments/assets/aabe8072-9e10-438a-b83c-72b44f8c557c" />
+
+
+------
+
 ## Example videos:
 
 The H.264 file sizes were within a few kilobytes of their respective DSV2 file size.  
