@@ -51,116 +51,83 @@ cpyblk(uint8_t *dec, uint8_t *ref, int dw, int rw, int w, int h)
 }
 
 /* D.5.2 Filtering */
-#define ITEST4x4_FLAT(e, f) (abs(e0 - avg) < (e) && \
-                             abs(i0 - avg) < (e) && \
-                             abs(e1 - avg) < (f) && \
-                             abs(i1 - avg) < (f) && \
-                             abs(e2 - avg) < (f) && \
-                             abs(i2 - avg) < (f))
 
 #define FILTER_DIM 4 /* do not touch, filters are hardcoded as 4x4 operations */
 
-#define LPF ((8 * (i0 + e0) + 5 * (e1 + i1) + 3 * (e2 + i2) + 16) >> 5)
+#define FILTER_EDGE(ptr, stride, tE, tF)                                   \
+    do {                                                                   \
+        int i2, i1, i0, e0, e1, e2, avg;                                   \
+        int d0e, d0i, d1e, d1i, d2e, d2i;                                  \
+        uint8_t *curp = ptr;                                               \
+                                                                           \
+        e2 = curp[-3 * (stride)];                                          \
+        e1 = curp[-2 * (stride)];                                          \
+        e0 = curp[-1 * (stride)];                                          \
+        i0 = curp[ 0 * (stride)];                                          \
+        i1 = curp[ 1 * (stride)];                                          \
+        i2 = curp[ 2 * (stride)];                                          \
+                                                                           \
+        avg = (8 * (i0 + e0) + 6 * (e1 + i1) + 2 * (e2 + i2) + 16) >> 5;   \
+                                                                           \
+        d0e = e0 - avg;                                                    \
+        d0i = i0 - avg;                                                    \
+        d1e = e1 - avg;                                                    \
+        d1i = i1 - avg;                                                    \
+        d2e = e2 - avg;                                                    \
+        d2i = i2 - avg;                                                    \
+        if (d0e < (tE) && -d0e < (tE) &&                                   \
+            d0i < (tE) && -d0i < (tE) &&                                   \
+            d1e < (tF) && -d1e < (tF) &&                                   \
+            d1i < (tF) && -d1i < (tF) &&                                   \
+            d2e < (tF) && -d2e < (tF) &&                                   \
+            d2i < (tF) && -d2i < (tF)) {                                   \
+            curp[-2 * (stride)] = (4 * e1 + 2 * e2 + i0 + e0 + 4) >> 3;    \
+            curp[-1 * (stride)] = (2 * (i0 + e0 + e1) + i1 + e2 + 4) >> 3; \
+            curp[ 0 * (stride)] = (2 * (i1 + i2 + e1) + e0 + i0 + 4) >> 3; \
+        }                                                                  \
+    } while (0)
 
-#define FC_E1 ((4 * e1 + 2 * e2 + i0 + e0 + 4) >> 3)
-#define FC_E0 ((2 * (i0 + e0 + e1) + i1 + e2 + 4) >> 3)
-#define FC_I0 ((2 * (i1 + i2 + e1) + e0 + i0 + 4) >> 3)
 
-/* these filtering functions, when combined, give a strong blur */
 static void
 ihfilter4x4(DSV_PLANE *dp, int x, int y, int threshE, int threshF)
 {
-    int line, top, bot;
-    int s = dp->stride;
+    uint8_t *p, *data;
+    int s, f;
 
     if (threshE <= 0 || threshF <= 0) {
         return;
     }
-    top = x + y * s;
-    bot = x + (y + FILTER_DIM) * s;
 
-    for (line = top; line < bot; line += s) {
-        int i2, i1, i0, e0, e1, e2, avg;
-        uint8_t *b;
+    data = dp->data;
+    s = dp->stride;
+    p = data + x + y * s;
 
-        b = dp->data + line;
-        e2 = b[-3];
-        e1 = b[-2];
-        e0 = b[-1];
-        i0 = b[0];
-        i1 = b[1];
-        i2 = b[2];
-        avg = LPF;
-        if (ITEST4x4_FLAT(threshE, threshF)) {
-            b[-2] = FC_E1;
-            b[-1] = FC_E0;
-            b[0] = FC_I0;
-        }
-
-        b += FILTER_DIM;
-        i2 = b[-2];
-        i1 = b[-1];
-        i0 = b[0];
-        e0 = b[1];
-        e1 = b[2];
-        e2 = b[3];
-        avg = LPF;
-        if (ITEST4x4_FLAT(threshE, threshF)) {
-            b[0] = FC_I0;
-            b[1] = FC_E0;
-            b[2] = FC_E1;
-        }
+    for (f = 0; f < FILTER_DIM; f++) {
+        FILTER_EDGE(p, 1, threshE, threshF);
+        FILTER_EDGE(p + FILTER_DIM, -1, threshE, threshF);
+        p += s;
     }
 }
+
 
 static void
 ivfilter4x4(DSV_PLANE *dp, int x, int y, int threshE, int threshF)
 {
-    int beg, end;
-    int i, s2, s3;
-    int s = dp->stride;
-    uint8_t *bk;
+    uint8_t *p, *data;
+    int s, f;
 
     if (threshE <= 0 || threshF <= 0) {
         return;
     }
-    bk = dp->data + FILTER_DIM * s;
-    beg = x + y * s;
-    end = x + FILTER_DIM + y * s;
-    s2 = s * 2;
-    s3 = s * 3;
 
-    for (i = beg; i < end; i++) {
-        int i2, i1, i0, e0, e1, e2, avg;
-        uint8_t *b;
+    data = dp->data;
+    s = dp->stride;
+    p = data + x + y * s;
 
-        b = dp->data + i;
-        e2 = b[-s3];
-        e1 = b[-s2];
-        e0 = b[-s];
-        i0 = b[0];
-        i1 = b[s];
-        i2 = b[s2];
-        avg = LPF;
-        if (ITEST4x4_FLAT(threshE, threshF)) {
-            b[-s2] = FC_E1;
-            b[-s] = FC_E0;
-            b[0] = FC_I0;
-        }
-
-        b = bk + i;
-        i2 = b[-s2];
-        i1 = b[-s];
-        i0 = b[0];
-        e0 = b[s];
-        e1 = b[s2];
-        e2 = b[s3];
-        avg = LPF;
-        if (ITEST4x4_FLAT(threshE, threshF)) {
-            b[0] = FC_I0;
-            b[s] = FC_E0;
-            b[s2] = FC_E1;
-        }
+    for (f = 0; f < FILTER_DIM; f++) {
+        FILTER_EDGE(p, s, threshE, threshF);
+        FILTER_EDGE(p + FILTER_DIM * s, -s, threshE, threshF);
+        p++;
     }
 }
 

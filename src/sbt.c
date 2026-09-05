@@ -45,6 +45,10 @@
 static void
 cpysub(DSV_SBC *dst, DSV_SBC *src, unsigned w, unsigned h, unsigned stride)
 {
+    if (stride == w) { /* the full image: the most important case with the most data being transferred */
+        memcpy(dst, src, w * h * sizeof(DSV_SBC));
+        return;
+    }
     w *= sizeof(DSV_SBC);
     while (h-- > 0) {
         memcpy(dst, src, w);
@@ -473,9 +477,11 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqpLH, int h
 {
     int x, y, woff, hoff, ws, hs, oddw, oddh;
     int LL, LH, HL, HH;
-    int idx, mhqpLH, mhqpHL;
+    int mhqpLH, mhqpHL;
+    int n2x2_w, n2x2_h;
+    DSV_SBC *ll, *lh, *hl, *hh;
+    DSV_SBC *spLL, *spLH, *spHL, *spHH;
 
-    DSV_SBC *os, *od, *spLL, *spLH, *spHL, *spHH;
     mhqpLH = 8 * hqpLH;
     mhqpHL = 8 * hqpHL;
     woff = DSV_ROUND_SHIFT(width, lvl);
@@ -485,40 +491,45 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqpLH, int h
     hs = DSV_ROUND_SHIFT(height, lvl - 1);
     oddw = ws & 1;
     oddh = hs & 1;
-    os = src;
-    od = dst;
+    n2x2_w = ws - oddw;
+    n2x2_h = hs - oddh;
 
     spLL = src;
     spLH = src + woff;
     spHL = src + hoff * width;
     spHH = src + woff + hoff * width;
-    for (y = 0; y < hs - oddh; y += 2) {
+    for (y = 0; y < n2x2_h; y += 2) {
         DSV_SBC *dpA, *dpB;
-        int inY = hqpHL && (y > 0 && y < (hs - oddh - 1));
+        int inY = hqpHL && (y > 0 && y < (n2x2_h - 1));
+
+        ll = spLL;
+        lh = spLH;
+        hl = spHL;
+        hh = spHH;
 
         dpA = dst + y * width;
         dpB = dpA + width;
-        for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
+        for (x = 0; x < n2x2_w; x += 2) {
             int nudge, lp, ln;
             int s0, s1, d0, d1;
-            int inX = hqpLH && (x > 0 && x < (ws - oddw - 1));
+            int inX = hqpLH && (x > 0 && x < (n2x2_w - 1));
 
-            LL = spLL[idx] * (1 << ovf_safety);
-            LH = spLH[idx];
-            HL = spHL[idx];
-            HH = spHH[idx];
+            LL = ll[0] * (1 << ovf_safety);
+            LH = lh[0];
+            HL = hl[0];
+            HH = hh[0];
 
             if (inX) {
-                lp = spLL[idx - 1] * (1 << ovf_safety); /* prev */
-                ln = spLL[idx + 1] * (1 << ovf_safety); /* next */
+                lp = ll[-1] * (1 << ovf_safety); /* prev */
+                ln = ll[ 1] * (1 << ovf_safety); /* next */
                 if (is_monotonic(lp, LL, ln, mhqpLH)) {
                     nudge = round8(lp - ln) - LH;
                     LH += CLAMP(nudge, -hqpLH, hqpLH); /* nudge LH to smooth it */
                 }
             }
             if (inY) { /* do the same as above but in the Y direction */
-                lp = spLL[idx - width] * (1 << ovf_safety);
-                ln = spLL[idx + width] * (1 << ovf_safety);
+                lp = ll[-width] * (1 << ovf_safety);
+                ln = ll[ width] * (1 << ovf_safety);
                 if (is_monotonic(lp, LL, ln, mhqpHL)) {
                     nudge = round8(lp - ln) - HL;
                     HL += CLAMP(nudge, -hqpHL, hqpHL); /* nudge HL to smooth it */
@@ -530,18 +541,25 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqpLH, int h
             d0 = LH + HH;
             d1 = LH - HH;
 
-            dpA[x + 0] = (s0 + d0) / 4;
-            dpA[x + 1] = (s0 - d0) / 4;
-            dpB[x + 0] = (s1 + d1) / 4;
-            dpB[x + 1] = (s1 - d1) / 4;
+            dpA[0] = (s0 + d0) / 4;
+            dpA[1] = (s0 - d0) / 4;
+            dpB[0] = (s1 + d1) / 4;
+            dpB[1] = (s1 - d1) / 4;
+
+            ll++;
+            lh++;
+            hl++;
+            hh++;
+
+            dpA += 2;
+            dpB += 2;
         }
-
         if (oddw) {
-            LL = spLL[idx] * (1 << ovf_safety);
-            HL = spHL[idx];
+            LL = ll[0] * (1 << ovf_safety);
+            HL = hl[0];
 
-            dpA[ws - 1] = (LL + HL) / 4;
-            dpB[ws - 1] = (LL - HL) / 4;
+            dpA[0] = (LL + HL) / 4;
+            dpB[0] = (LL - HL) / 4;
         }
         spLL += width;
         spLH += width;
@@ -550,19 +568,23 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqpLH, int h
     }
     if (oddh) {
         DSV_SBC *dpA = dst + (hs - 1) * width;
-        for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
-            LL = spLL[idx] * (1 << ovf_safety);
-            LH = spLH[idx];
-
-            dpA[x + 0] = (LL + LH) / 4;
-            dpA[x + 1] = (LL - LH) / 4;
+        ll = spLL;
+        lh = spLH;
+        for (x = 0; x < n2x2_w; x += 2) {
+            LL = ll[0] * (1 << ovf_safety);
+            LH = lh[0];
+            dpA[0] = (LL + LH) / 4;
+            dpA[1] = (LL - LH) / 4;
+            ll++;
+            lh++;
+            dpA += 2;
         }
         if (oddw) {
-            LL = spLL[idx] * (1 << ovf_safety);
-            dpA[ws - 1] = LL / 4;
+            LL = ll[0] * (1 << ovf_safety);
+            dpA[0] = LL / 4;
         }
     }
-    cpysub(os, od, ws, hs, width);
+    cpysub(src, dst, ws, hs, width);
 }
 
 /* pixel to subband coef */

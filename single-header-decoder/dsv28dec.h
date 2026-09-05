@@ -1422,24 +1422,6 @@ d28_extend_frame(DSV_FRAME *frame)
 /* overflow safety */
 #define OVF_SAFETY_CONDITION (l >= 11 && l >= (lvls - 3) && !fm->params->lossless)
 
-static void
-cpysub(DSV_SBC *dst, DSV_SBC *src, unsigned w, unsigned h, unsigned stride)
-{
-    w *= sizeof(DSV_SBC);
-    while (h-- > 0) {
-        memcpy(dst, src, w);
-        src += stride;
-        dst += stride;
-    }
-}
-
-/* C.3 Rounding Divisions */
-static int
-round8(int v)
-{
-    return (v + (v < 0 ? -4 : 4)) / 8;
-}
-
 /* pos/neg reflect */
 #define RP(i, n, s) (((i) >= (n) ? (2 * (n) - (i) - 2) : (i)) * (s))
 #define RN(i, s) (((i) < 0 ? -(i) : (i)) * (s))
@@ -1560,6 +1542,28 @@ inv_L2a_2d(DSV_SBC *tmp, DSV_SBC *in, int sW, int sH, int lvl, DSV_FMETA *fm)
     }
 }
 
+static void
+cpysub(DSV_SBC *dst, DSV_SBC *src, unsigned w, unsigned h, unsigned stride)
+{
+    if (stride == w) { /* the full image: the most important case with the most data being transferred */
+        memcpy(dst, src, w * h * sizeof(DSV_SBC));
+        return;
+    }
+    w *= sizeof(DSV_SBC);
+    while (h-- > 0) {
+        memcpy(dst, src, w);
+        src += stride;
+        dst += stride;
+    }
+}
+
+/* C.3 Rounding Divisions */
+static int
+round8(int v)
+{
+    return (v + (v < 0 ? -4 : 4)) / 8;
+}
+
 static int
 is_monotonic(int a, int b, int c, int hqp)
 {
@@ -1577,9 +1581,11 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqpLH, int h
 {
     int x, y, woff, hoff, ws, hs, oddw, oddh;
     int LL, LH, HL, HH;
-    int idx, mhqpLH, mhqpHL;
+    int mhqpLH, mhqpHL;
+    int n2x2_w, n2x2_h;
+    DSV_SBC *ll, *lh, *hl, *hh;
+    DSV_SBC *spLL, *spLH, *spHL, *spHH;
 
-    DSV_SBC *os, *od, *spLL, *spLH, *spHL, *spHH;
     mhqpLH = 8 * hqpLH;
     mhqpHL = 8 * hqpHL;
     woff = DSV_ROUND_SHIFT(width, lvl);
@@ -1589,40 +1595,45 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqpLH, int h
     hs = DSV_ROUND_SHIFT(height, lvl - 1);
     oddw = ws & 1;
     oddh = hs & 1;
-    os = src;
-    od = dst;
+    n2x2_w = ws - oddw;
+    n2x2_h = hs - oddh;
 
     spLL = src;
     spLH = src + woff;
     spHL = src + hoff * width;
     spHH = src + woff + hoff * width;
-    for (y = 0; y < hs - oddh; y += 2) {
+    for (y = 0; y < n2x2_h; y += 2) {
         DSV_SBC *dpA, *dpB;
-        int inY = hqpHL && (y > 0 && y < (hs - oddh - 1));
+        int inY = hqpHL && (y > 0 && y < (n2x2_h - 1));
+
+        ll = spLL;
+        lh = spLH;
+        hl = spHL;
+        hh = spHH;
 
         dpA = dst + y * width;
         dpB = dpA + width;
-        for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
+        for (x = 0; x < n2x2_w; x += 2) {
             int nudge, lp, ln;
             int s0, s1, d0, d1;
-            int inX = hqpLH && (x > 0 && x < (ws - oddw - 1));
+            int inX = hqpLH && (x > 0 && x < (n2x2_w - 1));
 
-            LL = spLL[idx] * (1 << ovf_safety);
-            LH = spLH[idx];
-            HL = spHL[idx];
-            HH = spHH[idx];
+            LL = ll[0] * (1 << ovf_safety);
+            LH = lh[0];
+            HL = hl[0];
+            HH = hh[0];
 
             if (inX) {
-                lp = spLL[idx - 1] * (1 << ovf_safety); /* prev */
-                ln = spLL[idx + 1] * (1 << ovf_safety); /* next */
+                lp = ll[-1] * (1 << ovf_safety); /* prev */
+                ln = ll[ 1] * (1 << ovf_safety); /* next */
                 if (is_monotonic(lp, LL, ln, mhqpLH)) {
                     nudge = round8(lp - ln) - LH;
                     LH += CLAMP(nudge, -hqpLH, hqpLH); /* nudge LH to smooth it */
                 }
             }
             if (inY) { /* do the same as above but in the Y direction */
-                lp = spLL[idx - width] * (1 << ovf_safety);
-                ln = spLL[idx + width] * (1 << ovf_safety);
+                lp = ll[-width] * (1 << ovf_safety);
+                ln = ll[ width] * (1 << ovf_safety);
                 if (is_monotonic(lp, LL, ln, mhqpHL)) {
                     nudge = round8(lp - ln) - HL;
                     HL += CLAMP(nudge, -hqpHL, hqpHL); /* nudge HL to smooth it */
@@ -1634,18 +1645,25 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqpLH, int h
             d0 = LH + HH;
             d1 = LH - HH;
 
-            dpA[x + 0] = (s0 + d0) / 4;
-            dpA[x + 1] = (s0 - d0) / 4;
-            dpB[x + 0] = (s1 + d1) / 4;
-            dpB[x + 1] = (s1 - d1) / 4;
+            dpA[0] = (s0 + d0) / 4;
+            dpA[1] = (s0 - d0) / 4;
+            dpB[0] = (s1 + d1) / 4;
+            dpB[1] = (s1 - d1) / 4;
+
+            ll++;
+            lh++;
+            hl++;
+            hh++;
+
+            dpA += 2;
+            dpB += 2;
         }
-
         if (oddw) {
-            LL = spLL[idx] * (1 << ovf_safety);
-            HL = spHL[idx];
+            LL = ll[0] * (1 << ovf_safety);
+            HL = hl[0];
 
-            dpA[ws - 1] = (LL + HL) / 4;
-            dpB[ws - 1] = (LL - HL) / 4;
+            dpA[0] = (LL + HL) / 4;
+            dpB[0] = (LL - HL) / 4;
         }
         spLL += width;
         spLH += width;
@@ -1654,21 +1672,24 @@ inv(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int hqpLH, int h
     }
     if (oddh) {
         DSV_SBC *dpA = dst + (hs - 1) * width;
-        for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
-            LL = spLL[idx] * (1 << ovf_safety);
-            LH = spLH[idx];
-
-            dpA[x + 0] = (LL + LH) / 4;
-            dpA[x + 1] = (LL - LH) / 4;
+        ll = spLL;
+        lh = spLH;
+        for (x = 0; x < n2x2_w; x += 2) {
+            LL = ll[0] * (1 << ovf_safety);
+            LH = lh[0];
+            dpA[0] = (LL + LH) / 4;
+            dpA[1] = (LL - LH) / 4;
+            ll++;
+            lh++;
+            dpA += 2;
         }
         if (oddw) {
-            LL = spLL[idx] * (1 << ovf_safety);
-            dpA[ws - 1] = LL / 4;
+            LL = ll[0] * (1 << ovf_safety);
+            dpA[0] = LL / 4;
         }
     }
-    cpysub(os, od, ws, hs, width);
+    cpysub(src, dst, ws, hs, width);
 }
-
 
 /* C.3.3 Subband Recomposition */
 static void
@@ -1895,116 +1916,82 @@ cpyblk(uint8_t *dec, uint8_t *ref, int dw, int rw, int w, int h)
 }
 
 /* D.5.2 Filtering */
-#define ITEST4x4_FLAT(e, f) (abs(e0 - avg) < (e) && \
-                             abs(i0 - avg) < (e) && \
-                             abs(e1 - avg) < (f) && \
-                             abs(i1 - avg) < (f) && \
-                             abs(e2 - avg) < (f) && \
-                             abs(i2 - avg) < (f))
-
 #define FILTER_DIM 4 /* do not touch, filters are hardcoded as 4x4 operations */
 
-#define LPF ((8 * (i0 + e0) + 5 * (e1 + i1) + 3 * (e2 + i2) + 16) >> 5)
+#define FILTER_EDGE(ptr, stride, tE, tF)                                   \
+    do {                                                                   \
+        int i2, i1, i0, e0, e1, e2, avg;                                   \
+        int d0e, d0i, d1e, d1i, d2e, d2i;                                  \
+        uint8_t *curp = ptr;                                               \
+                                                                           \
+        e2 = curp[-3 * (stride)];                                          \
+        e1 = curp[-2 * (stride)];                                          \
+        e0 = curp[-1 * (stride)];                                          \
+        i0 = curp[ 0 * (stride)];                                          \
+        i1 = curp[ 1 * (stride)];                                          \
+        i2 = curp[ 2 * (stride)];                                          \
+                                                                           \
+        avg = (8 * (i0 + e0) + 6 * (e1 + i1) + 2 * (e2 + i2) + 16) >> 5;   \
+                                                                           \
+        d0e = e0 - avg;                                                    \
+        d0i = i0 - avg;                                                    \
+        d1e = e1 - avg;                                                    \
+        d1i = i1 - avg;                                                    \
+        d2e = e2 - avg;                                                    \
+        d2i = i2 - avg;                                                    \
+        if (d0e < (tE) && -d0e < (tE) &&                                   \
+            d0i < (tE) && -d0i < (tE) &&                                   \
+            d1e < (tF) && -d1e < (tF) &&                                   \
+            d1i < (tF) && -d1i < (tF) &&                                   \
+            d2e < (tF) && -d2e < (tF) &&                                   \
+            d2i < (tF) && -d2i < (tF)) {                                   \
+            curp[-2 * (stride)] = (4 * e1 + 2 * e2 + i0 + e0 + 4) >> 3;    \
+            curp[-1 * (stride)] = (2 * (i0 + e0 + e1) + i1 + e2 + 4) >> 3; \
+            curp[ 0 * (stride)] = (2 * (i1 + i2 + e1) + e0 + i0 + 4) >> 3; \
+        }                                                                  \
+    } while (0)
 
-#define FC_E1 ((4 * e1 + 2 * e2 + i0 + e0 + 4) >> 3)
-#define FC_E0 ((2 * (i0 + e0 + e1) + i1 + e2 + 4) >> 3)
-#define FC_I0 ((2 * (i1 + i2 + e1) + e0 + i0 + 4) >> 3)
 
-/* these filtering functions, when combined, give a strong blur */
 static void
 ihfilter4x4(DSV_PLANE *dp, int x, int y, int threshE, int threshF)
 {
-    int line, top, bot;
-    int s = dp->stride;
+    uint8_t *p, *data;
+    int s, f;
 
     if (threshE <= 0 || threshF <= 0) {
         return;
     }
-    top = x + y * s;
-    bot = x + (y + FILTER_DIM) * s;
 
-    for (line = top; line < bot; line += s) {
-        int i2, i1, i0, e0, e1, e2, avg;
-        uint8_t *b;
+    data = dp->data;
+    s = dp->stride;
+    p = data + x + y * s;
 
-        b = dp->data + line;
-        e2 = b[-3];
-        e1 = b[-2];
-        e0 = b[-1];
-        i0 = b[0];
-        i1 = b[1];
-        i2 = b[2];
-        avg = LPF;
-        if (ITEST4x4_FLAT(threshE, threshF)) {
-            b[-2] = FC_E1;
-            b[-1] = FC_E0;
-            b[0] = FC_I0;
-        }
-
-        b += FILTER_DIM;
-        i2 = b[-2];
-        i1 = b[-1];
-        i0 = b[0];
-        e0 = b[1];
-        e1 = b[2];
-        e2 = b[3];
-        avg = LPF;
-        if (ITEST4x4_FLAT(threshE, threshF)) {
-            b[0] = FC_I0;
-            b[1] = FC_E0;
-            b[2] = FC_E1;
-        }
+    for (f = 0; f < FILTER_DIM; f++) {
+        FILTER_EDGE(p, 1, threshE, threshF);
+        FILTER_EDGE(p + FILTER_DIM, -1, threshE, threshF);
+        p += s;
     }
 }
+
 
 static void
 ivfilter4x4(DSV_PLANE *dp, int x, int y, int threshE, int threshF)
 {
-    int beg, end;
-    int i, s2, s3;
-    int s = dp->stride;
-    uint8_t *bk;
+    uint8_t *p, *data;
+    int s, f;
 
     if (threshE <= 0 || threshF <= 0) {
         return;
     }
-    bk = dp->data + FILTER_DIM * s;
-    beg = x + y * s;
-    end = x + FILTER_DIM + y * s;
-    s2 = s * 2;
-    s3 = s * 3;
 
-    for (i = beg; i < end; i++) {
-        int i2, i1, i0, e0, e1, e2, avg;
-        uint8_t *b;
+    data = dp->data;
+    s = dp->stride;
+    p = data + x + y * s;
 
-        b = dp->data + i;
-        e2 = b[-s3];
-        e1 = b[-s2];
-        e0 = b[-s];
-        i0 = b[0];
-        i1 = b[s];
-        i2 = b[s2];
-        avg = LPF;
-        if (ITEST4x4_FLAT(threshE, threshF)) {
-            b[-s2] = FC_E1;
-            b[-s] = FC_E0;
-            b[0] = FC_I0;
-        }
-
-        b = bk + i;
-        i2 = b[-s2];
-        i1 = b[-s];
-        i0 = b[0];
-        e0 = b[s];
-        e1 = b[s2];
-        e2 = b[s3];
-        avg = LPF;
-        if (ITEST4x4_FLAT(threshE, threshF)) {
-            b[0] = FC_I0;
-            b[s] = FC_E0;
-            b[s2] = FC_E1;
-        }
+    for (f = 0; f < FILTER_DIM; f++) {
+        FILTER_EDGE(p, s, threshE, threshF);
+        FILTER_EDGE(p + FILTER_DIM * s, -s, threshE, threshF);
+        p++;
     }
 }
 
