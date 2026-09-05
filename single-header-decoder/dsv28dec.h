@@ -3045,18 +3045,27 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
 
     run = (runs-- > 0) ? bs_get_ueg(bs) : INT_MAX;
 
+    bufsz *= 8; /* convert from bytes to bits to make comparison in loops a little easier */
+
     if (fm->params->lossless) {
         /* C.2.3 LL Subband */
         for (y = 0; y < sh; y++) {
-            for (x = 0; x < sw; x++) {
-                if (!run--) {
-                    v = bs_get_neg(bs);
-                    run = (runs-- > 0) ? bs_get_ueg(bs) : INT_MAX;
-                    if (bs_ptr(bs) >= bufsz) {
-                        return;
+            x = 0;
+            while (x < sw) {
+                if (run > 0) {
+                    int rem = MIN(run, (sw - x));
+                    x += rem;
+                    run -= rem;
+                    if (x == sw) {
+                        break;
                     }
-                    outp[x] = v;
                 }
+                v = bs_get_neg(bs);
+                run = (runs-- > 0) ? bs_get_ueg(bs) : INT_MAX;
+                if (bs->pos >= bufsz) {
+                    return;
+                }
+                outp[x++] = v;
             }
             outp += w;
         }
@@ -3068,15 +3077,22 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
                 o = subband(l, s, w, h);
                 outp = out + o;
                 for (y = 0; y < sh; y++) {
-                    for (x = 0; x < sw; x++) {
-                        if (!run--) {
-                            v = GETV(bs);
-                            run = (runs-- > 0) ? bs_get_ueg(bs) : INT_MAX;
-                            if (bs_ptr(bs) >= bufsz) {
-                                return;
+                    x = 0;
+                    while (x < sw) {
+                        if (run > 0) {
+                            int rem = MIN(run, (sw - x));
+                            x += rem;
+                            run -= rem;
+                            if (x == sw) {
+                                break;
                             }
-                            outp[x] = v;
                         }
+                        v = GETV(bs);
+                        run = (runs-- > 0) ? bs_get_ueg(bs) : INT_MAX;
+                        if (bs->pos >= bufsz) {
+                            return;
+                        }
+                        outp[x++] = v;
                     }
                     outp += w;
                 }
@@ -3085,15 +3101,22 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
     } else {
         /* C.2.3 LL Subband */
         for (y = 0; y < sh; y++) {
-            for (x = 0; x < sw; x++) {
-                if (!run--) {
-                    v = bs_get_neg(bs);
-                    run = (runs-- > 0) ? bs_get_ueg(bs) : INT_MAX;
-                    if (bs_ptr(bs) >= bufsz) {
-                        return;
+            x = 0;
+            while (x < sw) {
+                if (run > 0) {
+                    int rem = MIN(run, (sw - x));
+                    x += rem;
+                    run -= rem;
+                    if (x == sw) {
+                        break;
                     }
-                    outp[x] = dequant(v, qp, isP);
                 }
+                v = bs_get_neg(bs);
+                run = (runs-- > 0) ? bs_get_ueg(bs) : INT_MAX;
+                if (bs->pos >= bufsz) {
+                    return;
+                }
+                outp[x++] = dequant(v, qp, isP);
             }
             outp += w;
         }
@@ -3114,30 +3137,65 @@ hzcc_dec(DSV_BS *bs, unsigned bufsz, DSV_COEFS *dst, int q, DSV_FMETA *fm)
                 qp = hfquant(fm, q, s, l);
 
                 outp = out + o;
-                by = 0;
-                for (y = 0; y < sh; y++) {
-                    bx = 0;
-                    blockrow = fm->blockdata + (by >> DSV_BLOCK_INTERP_P) * fm->params->nblocks_h;
-                    parent = out + par + ((y >> 1) * w);
-                    for (x = 0; x < sw; x++) {
-                        if (!run--) {
-                            int tmq = qp;
+                if (isP) {
+                    /* inter frame, simple decoding loop */
+                    for (y = 0; y < sh; y++) {
+                        x = 0;
+                        while (x < sw) {
+                            if (run > 0) {
+                                int rem = MIN(run, (sw - x));
+                                x += rem;
+                                run -= rem;
+                                if (x == sw) {
+                                    break;
+                                }
+                            }
                             v = GETV(bs);
                             run = (runs-- > 0) ? bs_get_ueg(bs) : INT_MAX;
-                            if (bs_ptr(bs) >= bufsz) {
+                            if (bs->pos >= bufsz) {
                                 return;
                             }
-                            if (!isP) {
-                                int flags = blockrow[bx >> DSV_BLOCK_INTERP_P];
-                                int parc = parent[x >> 1];
-                                TMQ4POS_I(tmq, flags, l);
-                            }
-                            outp[x] = dequant(v, tmq, isP);
+                            outp[x++] = dequant(v, qp, 1);
                         }
-                        bx += dbx;
+                        outp += w;
                     }
-                    outp += w;
-                    by += dby;
+                } else {
+                    /* intra frame, uses blockdata for AQ */
+                    by = 0;
+                    for (y = 0; y < sh; y++) {
+                        x = 0;
+                        bx = 0;
+                        blockrow = fm->blockdata + (by >> DSV_BLOCK_INTERP_P) * fm->params->nblocks_h;
+                        parent = out + par + ((y >> 1) * w);
+                        while (x < sw) {
+                            int flags, parc;
+                            int tmq = qp;
+
+                            if (run > 0) {
+                                int rem = MIN(run, (sw - x));
+                                x += rem;
+                                bx += rem * dbx;
+                                run -= rem;
+                                if (x == sw) {
+                                    break;
+                                }
+                            }
+                            v = GETV(bs);
+                            run = (runs-- > 0) ? bs_get_ueg(bs) : INT_MAX;
+                            if (bs->pos >= bufsz) {
+                                return;
+                            }
+
+                            flags = blockrow[bx >> DSV_BLOCK_INTERP_P];
+                            parc = parent[x >> 1];
+                            TMQ4POS_I(tmq, flags, l);
+
+                            outp[x++] = dequant(v, tmq, 0);
+                            bx += dbx;
+                        }
+                        outp += w;
+                        by += dby;
+                    }
                 }
             }
         }
