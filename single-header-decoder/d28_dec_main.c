@@ -21,7 +21,7 @@
 
 #define VERSION_BUILD 0
 
-#define DRV_HEADER "Envel Graphics DSV v2.%d decoder by EMMIR 2024-2025. "\
+#define DRV_HEADER "Envel Graphics DSV v2.%d decoder by EMMIR 2024-2026. "\
                    "build %d\n", \
                     DSV_VERSION_MINOR, VERSION_BUILD
 
