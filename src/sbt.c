@@ -150,38 +150,83 @@ round8(int v)
 /* Filter coefficients for this encoder's ASF analysis implementation.
  * These coefficients and forward filtering methods can be unique to each
  * encoder since the decoder simply does a 3-tap synthesis. */
-#define LPFA 98
-#define LPFB 37
-#define LPFC 17
-#define LPFD 5
+/* 16*(-1,2,6,2,-1) and 32*(-1,2,-1) (same as normal LeGall-Tabatabai 5/3) */
+#define LPF_VHI_A 96
+#define LPF_VHI_B 32
+#define LPF_VHI_C 16
+#define LPF_VHI_D 0
+#define LPF_VHI_E 0
 
-#define LPFAR 98
-#define LPFBR 38
-#define LPFCR 21
-#define LPFDR 6
-#define LPFER 4
+#define HPF_VHI_A 64
+#define HPF_VHI_B 32
+#define HPF_VHI_C 0
+#define HPF_VHI_D 0
+#define HPF_VHI_E 0
+
+/* low pass coeffs for different quality ranges */
+#define LPF_HI_A 96
+#define LPF_HI_B 33
+#define LPF_HI_C 16
+#define LPF_HI_D 1
+#define LPF_HI_E 0
+
+#define LPF_MHI_A 98
+#define LPF_MHI_B 33
+#define LPF_MHI_C 17
+#define LPF_MHI_D 1
+#define LPF_MHI_E 0
+
+#define LPF_MED_A 98
+#define LPF_MED_B 34
+#define LPF_MED_C 17
+#define LPF_MED_D 2
+#define LPF_MED_E 0
+
+#define LPF_MLO_A 100
+#define LPF_MLO_B 37
+#define LPF_MLO_C 19
+#define LPF_MLO_D 5
+#define LPF_MLO_E 1
+
+#define LPF_LO_A 100
+#define LPF_LO_B 38
+#define LPF_LO_C 19
+#define LPF_LO_D 6
+#define LPF_LO_E 1
+
+#define LPF_VLO_A 100
+#define LPF_VLO_B 39
+#define LPF_VLO_C 19
+#define LPF_VLO_D 7
+#define LPF_VLO_E 1
+
+#define HPF_GEN_A 66
+#define HPF_GEN_B 32
+#define HPF_GEN_C 1
+#define HPF_GEN_D 0
+#define HPF_GEN_E 0
 
 #define HPFA 64
 #define HPFB 32
+#define HPFC 0
+#define HPFD 0
+#define HPFE 0
 
 #define ASFNORM 7
 
-#define ASF7R9H3_LO(i, vs, s) \
-                  (LPFA *  vs[RN(i + 0, s)] \
-                 + LPFB * (vs[RN(i - 1, s)] + vs[RP(i + 1, n, s)]) \
-                 - LPFC * (vs[RN(i - 2, s)] + vs[RP(i + 2, n, s)]) \
-                 - LPFD * (vs[RN(i - 3, s)] + vs[RP(i + 3, n, s)]))
+#define ASF7R9H3_LO(i, vs, s, coef) \
+                  (coef##A *  vs[RN(i + 0, s)] \
+                 + coef##B * (vs[RN(i - 1, s)] + vs[RP(i + 1, n, s)]) \
+                 - coef##C * (vs[RN(i - 2, s)] + vs[RP(i + 2, n, s)]) \
+                 - coef##D * (vs[RN(i - 3, s)] + vs[RP(i + 3, n, s)]) \
+                 + coef##E * (vs[RN(i - 4, s)] + vs[RP(i + 4, n, s)]))
 
-#define ASF7R9H3_LO_R(i, vs, s) \
-                  (LPFAR *  vs[RN(i + 0, s)] \
-                 + LPFBR * (vs[RN(i - 1, s)] + vs[RP(i + 1, n, s)]) \
-                 - LPFCR * (vs[RN(i - 2, s)] + vs[RP(i + 2, n, s)]) \
-                 - LPFDR * (vs[RN(i - 3, s)] + vs[RP(i + 3, n, s)]) \
-                 + LPFER * (vs[RN(i - 4, s)] + vs[RP(i + 4, n, s)]))
-
-#define ASF7R9H3_HI(i, vs, s) \
-                  (HPFA *  vs[RN(i + 0, s)] \
-                 - HPFB * (vs[RN(i - 1, s)] + vs[RP(i + 1, n, s)]))
+#define ASF7R9H3_HI(i, vs, s, coef) \
+                  (coef##A *  vs[RN(i + 0, s)] \
+                 - coef##B * (vs[RN(i - 1, s)] + vs[RP(i + 1, n, s)]) \
+                 - coef##C * (vs[RN(i - 2, s)] + vs[RP(i + 2, n, s)]) \
+                 + coef##D * (vs[RN(i - 3, s)] + vs[RP(i + 3, n, s)]) \
+                 + coef##E * (vs[RN(i - 4, s)] + vs[RP(i + 4, n, s)]))
 
 static void
 dwt_forward(DSV_SBC *io, int n)
@@ -227,22 +272,59 @@ ifilterL2_a(DSV_SBC *out, DSV_SBC *in, int n, int s, uint8_t *sb, int delta, int
  * (full frame size) and is only applied to the luma plane (which the spec
  * requires to have even dimensions) */
 static void
-filterL1(DSV_SBC *out, DSV_SBC *in, int n, int s, uint8_t *sb, int delta, int sbs)
+filterL1(DSV_SBC *out, DSV_SBC *in, int n, int s, int quant)
 {
-    int i, L, H, sbp = 0;
-    delta *= 2;
+    int i, L, H;
+    int quant_category;
+    /* experimentally determined */
+    if (quant < 64) {
+        quant_category = 0;
+    } else if (quant < 162) {
+        quant_category = 1;
+    } else if (quant < 440) {
+        quant_category = 2;
+    } else if (quant < 880) {
+        quant_category = 3;
+    } else if (quant < 1000) {
+        quant_category = 4;
+    } else if (quant < 1700) {
+        quant_category = 5;
+    } else {
+        quant_category = 6;
+    }
     for (i = 1; i < n - 2; i += 2) {
-        int bv = sb[(sbp >> DSV_BLOCK_INTERP_P) * sbs];
-        if (bv & DSV_IS_RINGING) {
-            L = ASF7R9H3_LO_R((i - 1), in, s);
-        } else {
-            L = ASF7R9H3_LO((i - 1), in, s);
+        switch (quant_category) {
+            case 0: /* very high -- q90+ */
+                L = ASF7R9H3_LO((i - 1), in, s, LPF_VHI_);
+                H = ASF7R9H3_HI((i - 0), in, s, HPF_VHI_);
+                break;
+            case 1: /* high -- q70+ */
+                L = ASF7R9H3_LO((i - 1), in, s, LPF_HI_);
+                H = ASF7R9H3_HI((i - 0), in, s, HPF_GEN_);
+                break;
+            case 2: /* medium-high -- q50+ */
+                L = ASF7R9H3_LO((i - 1), in, s, LPF_MHI_);
+                H = ASF7R9H3_HI((i - 0), in, s, HPF_GEN_);
+                break;
+            case 3: /* medium -- q40+ */
+                L = ASF7R9H3_LO((i - 1), in, s, LPF_MED_);
+                H = ASF7R9H3_HI((i - 0), in, s, HPF_GEN_);
+                break;
+            case 4: /* medium-low -- q30+ */
+                L = ASF7R9H3_LO((i - 1), in, s, LPF_MLO_);
+                H = ASF7R9H3_HI((i - 0), in, s, HPF_GEN_);
+                break;
+            case 5: /* low -- q20+ */
+                L = ASF7R9H3_LO((i - 1), in, s, LPF_LO_);
+                H = ASF7R9H3_HI((i - 0), in, s, HPF_GEN_);
+                break;
+            case 6: /* very low -- the rest */
+                L = ASF7R9H3_LO((i - 1), in, s, LPF_VLO_);
+                H = ASF7R9H3_HI((i - 0), in, s, HPF_GEN_);
+                break;
         }
-        H = ASF7R9H3_HI((i - 0), in, s);
-
         out[(i + 0) / 2 * s] = (L + (1 << (ASFNORM - 2))) >> (ASFNORM - 1);
         out[(i + n) / 2 * s] = (H + (1 << (ASFNORM - 4))) >> (ASFNORM - 3);
-        sbp += delta;
     }
     /* deal with edges */
     in[1 * s] -= (in[0 * s] + in[2 * s] + 1) >> 1;
@@ -309,26 +391,18 @@ filterL1(DSV_SBC *out, DSV_SBC *in, int n, int s, uint8_t *sb, int delta, int sb
 }
 
 static void
-fwd_L1a_2d(DSV_SBC *tmp, DSV_SBC *in, int sW, int sH, int lvl, DSV_FMETA *fm)
+fwd_L1a_2d(DSV_SBC *tmp, DSV_SBC *in, int sW, int sH, int lvl, int q)
 {
-    int i, j, bx = 0, by = 0, dbx, dby, w, h;
-    uint8_t *line;
+    int i, j, w, h;
 
     w = DSV_ROUND_SHIFT(sW, lvl - 1);
     h = DSV_ROUND_SHIFT(sH, lvl - 1);
 
-    /* stretch blockdata to fit sub-image */
-    dbx = (fm->params->nblocks_h << DSV_BLOCK_INTERP_P) / w;
-    dby = (fm->params->nblocks_v << DSV_BLOCK_INTERP_P) / h;
     for (j = 0; j < h; j++) {
-        line = fm->blockdata + (by >> DSV_BLOCK_INTERP_P) * fm->params->nblocks_h;
-        filterL1(tmp + sW * j, in + sW * j, w, 1, line, dbx, 1);
-        by += dby;
+        filterL1(tmp + sW * j, in + sW * j, w, 1, q);
     }
     for (i = 0; i < w; i++) {
-        line = fm->blockdata + (bx >> DSV_BLOCK_INTERP_P);
-        filterL1(in + i, tmp + i, h, sW, line, dby, fm->params->nblocks_h);
-        bx += dbx;
+        filterL1(in + i, tmp + i, h, sW, q);
     }
 }
 
@@ -638,7 +712,7 @@ nlevels(int w, int h)
 }
 
 extern void
-dsv_fwd_sbt(DSV_PLANE *src, DSV_COEFS *dst, DSV_FMETA *fm)
+dsv_fwd_sbt(DSV_PLANE *src, DSV_COEFS *dst, int q, DSV_FMETA *fm)
 {
     int w, h, lvls, l, ovf_safety;
     DSV_SBC *temp_buf_pad, *temp_buf_line;
@@ -673,7 +747,7 @@ dsv_fwd_sbt(DSV_PLANE *src, DSV_COEFS *dst, DSV_FMETA *fm)
         } else if (L2A_CONDITION) {
             fwd_L2a_2d(temp_buf_pad, dst->data, w, h, l, fm);
         } else if (L1_CONDITION) {
-            fwd_L1a_2d(temp_buf_pad, dst->data, w, h, l, fm);
+            fwd_L1a_2d(temp_buf_pad, dst->data, w, h, l, q);
         } else {
             fwd(dst->data, temp_buf_pad, w, h, l, ovf_safety);
         }

@@ -732,7 +732,7 @@ scene_change_detection(DSV_ENCODER *enc, DSV_ENCDATA *d)
     nlost = (enc->total_loss * nlost) / (p->nblocks_h * p->nblocks_v);
     skipn = (skipn * 100) / (p->nblocks_h * p->nblocks_v);
     DSV_DEBUG(("total_loss = %d, nlost = %d", enc->total_loss, nlost));
-    if ((nlost > (enc->intra_pct_thresh) &&
+    if ((nlost > enc->intra_pct_thresh &&
         enc->curr_avgmot < 10 &&
         enc->motion_chaos <= CLAMP((enc->prev_chaos / 2) + skipn, 20, 40))) {
         DSV_INFO(("too much cumulative detail loss, inserting I frame %d%%", nlost));
@@ -1270,7 +1270,7 @@ encode_picture(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_BUF *output_buf)
     /* encode the residual image */
     for (i = 0; i < 3; i++) {
         fm.cur_plane = i;
-        dsv_fwd_sbt(&d->residual->planes[i], &coefs[i], &fm);
+        dsv_fwd_sbt(&d->residual->planes[i], &coefs[i], d->quant, &fm);
         dsv_encode_plane(&bs, &coefs[i], d->quant, &fm);
         dsv_inv_sbt(&d->residual->planes[i], &coefs[i], d->quant, &fm);
 

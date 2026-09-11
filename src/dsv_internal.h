@@ -111,7 +111,7 @@ extern int dsv_bs_get_nrice(DSV_BS *bs, unsigned *rk, unsigned *avg);
 #define DSV_IS_EPRM       (1 << DSV_EPRM_BIT)
 #define DSV_IS_SIMCMPLX   (1 << DSV_SIMCMPLX_BIT)
 
-extern void dsv_fwd_sbt(DSV_PLANE *src, DSV_COEFS *dst, DSV_FMETA *fm);
+extern void dsv_fwd_sbt(DSV_PLANE *src, DSV_COEFS *dst, int q, DSV_FMETA *fm);
 extern void dsv_inv_sbt(DSV_PLANE *dst, DSV_COEFS *src, int q, DSV_FMETA *fm);
 
 extern void dsv_encode_plane(DSV_BS *bs, DSV_COEFS *src, int q, DSV_FMETA *fm);
