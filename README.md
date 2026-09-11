@@ -73,11 +73,21 @@ https://github.com/user-attachments/assets/37283f25-4ca7-4587-aee6-5b619301b8d0
 
 - single pass average bitrate (ABR) or constant rate factor (CRF) rate control
 - more advanced Human Visual System (HVS) based intra block mode determination
-- new Human Visual System (HVS) based intra frame adaptive quantization
+- new HVS based intra frame adaptive quantization
 - more complex scene change detection
 - hierarchical motion estimation
 - better temporal adaptive quantization
 - written to be compatible with C89
+
+Approximate quality guide for encoding:  
+ qp 0-20 = very low quality    
+ qp 20-30 = low quality  
+ qp 30-40 = medium-low quality  
+ qp 40-50 = medium quality  
+ qp 50-70 = medium-high quality  
+ qp 70-90 = high quality, around qp 70 is the beginning of 'visually lossless'  
+ qp 90-99 = very high quality (visually lossless)  
+ qp 100 = mathematically lossless  
 
 --- for more detailed information please refer to the encoder information document (DSV2_encoder.pdf) in the repository.
 
