@@ -545,6 +545,8 @@ calc_EPRM(DSV_PLANE *src, DSV_PLANE *mvr, int avg_src, int avg_ref,
     uint8_t *srcp = src->data;
     uint8_t *mvrp = mvr->data;
 
+    avg_src -= 128;
+    avg_ref -= 128;
     for (j = 0; j < h; j++) {
         for (i = 0; i < w; i++) {
             int sp = srcp[i];
@@ -552,13 +554,13 @@ calc_EPRM(DSV_PLANE *src, DSV_PLANE *mvr, int avg_src, int avg_ref,
 
             /* see if MV pred or intra pred would clip and require EPRM */
             if (!clipr) {
-                clipr = sp < mp - 128 || sp > mp + 127;
+                clipr = (sp > (mp + 127)) || (sp < (mp - 128));
             }
             if (!clipi) {
-                clipi = avg_ref > sp + 128 || avg_ref < sp - 127;
+                clipi = (avg_ref > sp) || (avg_ref < (sp - 255));
             }
             if (!clipd) {
-                clipd = avg_src > sp + 128 || avg_src < sp - 127;
+                clipd = (avg_src > sp) || (avg_src < (sp - 255));
             }
             if (clipi && clipd && clipr) {
                 *eprmi = 1;
