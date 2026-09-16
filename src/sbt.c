@@ -45,12 +45,14 @@
 static void
 cpysub(DSV_SBC *dst, DSV_SBC *src, unsigned w, unsigned h, unsigned stride)
 {
+    unsigned i;
+
     if (stride == w) { /* the full image: the most important case with the most data being transferred */
         memcpy(dst, src, w * h * sizeof(DSV_SBC));
         return;
     }
     w *= sizeof(DSV_SBC);
-    while (h-- > 0) {
+    for (i = 0; i < h; i++) {
         memcpy(dst, src, w);
         src += stride;
         dst += stride;

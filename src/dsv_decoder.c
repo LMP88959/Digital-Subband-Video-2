@@ -456,7 +456,7 @@ dsv_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
     DSV_COEFS coefs[3];
     unsigned xf_buf_sz;
 
-    *fn = -1;
+    *fn = ~(DSV_FNUM) 0;
 
     dsv_bs_init(&bs, buffer->data);
     pkt_type = decode_packet_hdr(&bs);

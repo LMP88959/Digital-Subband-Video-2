@@ -31,7 +31,7 @@ dsv_bs_align(DSV_BS *bs)
     if (dsv_bs_aligned(bs)) {
         return; /* already aligned */
     }
-    bs->pos = ((bs->pos + 7) & ((unsigned) (~0) << 3)); /* byte align */
+    bs->pos = ((bs->pos + (unsigned) 7) & (~(unsigned) 7)); /* byte align */
 }
 
 extern void
@@ -84,7 +84,7 @@ local_put_bits(DSV_BS *bs, unsigned n, unsigned v)
     while (n > 0) {
         rem = 8 - (bs->pos & 7);
         rem = MIN(n, rem);
-        bit = (7 - (bs->pos & 7)) - rem + 1;
+        bit = (8 - (bs->pos & 7)) - rem;
         data = (v >> (n - rem)) & ((1 << rem) - 1);
         bs->start[dsv_bs_ptr(bs)] |= data << bit;
         n -= rem;
@@ -118,7 +118,7 @@ dsv_bs_get_bits(DSV_BS *bs, unsigned n)
     while (n > 0) {
         rem = 8 - (bs->pos & 7);
         rem = MIN(n, rem);
-        bit = (7 - (bs->pos & 7)) - rem + 1;
+        bit = (8 - (bs->pos & 7)) - rem;
         out <<= rem;
         out |= (bs->start[dsv_bs_ptr(bs)] & (((1 << rem) - 1) << bit)) >> bit;
         n -= rem;

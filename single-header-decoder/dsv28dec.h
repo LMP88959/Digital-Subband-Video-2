@@ -392,14 +392,12 @@ extern int d28_get_log_level(void);
 #define CLAMP(x, a, b) ((x) < (a) ? (a) : ((x) > (b) ? (b) : (x)))
 #endif
 #define DSV_ROUND_SHIFT(x, shift) (((x) + (1 << (shift)) - 1) >> (shift))
-#define DSV_ROUND_POW2(x, pwr) (((x) + (1 << (pwr)) - 1) & ((unsigned)(~0) << (pwr)))
+#define DSV_ROUND_POW2(x, pwr) (((unsigned)(x) + ((unsigned) 1 << (pwr)) - (unsigned) 1) & ~(((unsigned) 1 << (pwr)) - (unsigned) 1))
 #define DSV_UDIV_ROUND_UP(a,b) (((a) + (b) - 1) / (b))
-#define DSV_UDIV_ROUND(a,b) (((a) + ((b) / 2)) / (b))
 #define DSV_UAVG4(a, b, c, d) ((unsigned) ((a) + (b) + (c) + (d) + 2) >> 2)
 #define DSV_SIGNOF(x) (((x) > 0) - ((x) < 0))
 
-#define DSV_S2U(v) ((unsigned) ((2 * (v)) ^ ((v) < 0 ? ~0 : 0)))
-#define DSV_U2S(v) (((unsigned) (v) >> 1) ^ (-((unsigned) (v) & 1)))
+#define DSV_U2S(v) (((v) & (unsigned) 1) ? -(int)(((v) >> 1) + 1u) : (int) ((v) >> 1))
 
 /* portable sar - shift arithmetic right, or floordiv_pow2 */
 #if DSV_PORTABLE
@@ -464,28 +462,20 @@ typedef struct {
         int32_t all;
     } u;
 #define DSV_IS_SUBPEL(v) (((v)->u.mv.x | (v)->u.mv.y) & 3)
-#define DSV_IS_QPEL(v) (((v)->u.mv.x | (v)->u.mv.y) & 1)
-#define DSV_IS_DIAG(v) (((v)->u.mv.x & 3) && ((v)->u.mv.y & 3))
 #define DSV_TEMPORAL_MC(fno) ((fno) % 2)
 
 #define DSV_MV_BIT_INTRA    0
 #define DSV_MV_BIT_EPRM     1
-#define DSV_MV_BIT_MAINTAIN 2
 #define DSV_MV_BIT_SKIP     3
-#define DSV_MV_BIT_RINGING  4
 
 #define DSV_MV_IS_INTRA(mv)     ((mv)->flags & (1 << DSV_MV_BIT_INTRA))
 #define DSV_MV_IS_EPRM(mv)      ((mv)->flags & (1 << DSV_MV_BIT_EPRM))
-#define DSV_MV_IS_MAINTAIN(mv)  ((mv)->flags & (1 << DSV_MV_BIT_MAINTAIN))
 #define DSV_MV_IS_SKIP(mv)      ((mv)->flags & (1 << DSV_MV_BIT_SKIP))
-#define DSV_MV_IS_RINGING(mv)   ((mv)->flags & (1 << DSV_MV_BIT_RINGING))
 
-#define DSV_BIT_SET(v, b, on) ((v) &= ~(1 << (b)), (v) |= ((on) << (b)))
+#define DSV_BIT_SET(v, b, on) ((v) &= ~(unsigned) (1 << (b)), (v) |= ((on) << (b)))
 #define DSV_MV_SET_INTRA(mv, b)     (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_INTRA, b))
 #define DSV_MV_SET_EPRM(mv, b)      (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_EPRM, b))
-#define DSV_MV_SET_MAINTAIN(mv, b)  (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_MAINTAIN, b))
 #define DSV_MV_SET_SKIP(mv, b)      (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_SKIP, b))
-#define DSV_MV_SET_RINGING(mv, b)   (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_RINGING, b))
     uint32_t flags;
 #define DSV_SRC_DC_PRED 0x100
     uint16_t dc;
@@ -942,7 +932,7 @@ bs_align(DSV_BS *bs)
     if (bs_aligned(bs)) {
         return; /* already aligned */
     }
-    bs->pos = ((bs->pos + 7) & ((unsigned) (~0) << 3)); /* byte align */
+    bs->pos = ((bs->pos + (unsigned) 7) & (~(unsigned) 7)); /* byte align */
 }
 
 static unsigned
@@ -964,7 +954,7 @@ bs_get_bits(DSV_BS *bs, unsigned n)
     while (n > 0) {
         rem = 8 - (bs->pos & 7);
         rem = MIN(n, rem);
-        bit = (7 - (bs->pos & 7)) - rem + 1;
+        bit = (8 - (bs->pos & 7)) - rem;
         out <<= rem;
         out |= (bs->start[bs_ptr(bs)] & (((1 << rem) - 1) << bit)) >> bit;
         n -= rem;
@@ -3545,8 +3535,8 @@ d28_dec(DSV_DECODER *d, DSV_BUF *buffer, DSV_FRAME **out, DSV_FNUM *fn)
     unsigned xf_buf_sz;
     int has_ref;
 
-    *fn = -1;
-
+    *fn = ~(DSV_FNUM) 0;
+    
     bs_init(&bs, buffer->data);
     pkt_type = decode_packet_hdr(&bs);
 

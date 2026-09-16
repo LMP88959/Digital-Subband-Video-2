@@ -1119,10 +1119,10 @@ test_subblock_intra_y(DSV_HME *hme, DSV_MV *mv,
 
             src_bias = (SQR(MIN(local_detail + 64, 65535)) / MAX(SQR(avg_quant) >> DSV_MAX_QP_BITS, 1));
             haar_energy(hme, src_d, srcp->stride, NULL, 0, /* intra test */
-                         sbw, sbh, avg_src, -1, &src_report);
+                         sbw, sbh, avg_src, 0, &src_report);
             src_report.total_energy += src_bias;
             haar_energy(hme, src_d, srcp->stride, NULL, 0, /* intra test */
-                         sbw, sbh, avg_sub, -1, &sub_report);
+                         sbw, sbh, avg_sub, 0, &sub_report);
 
             /* add block detail to expression to bias intra decision towards less detailed blocks */
             src_better = (src_report.total_energy + qsf + local_detail + static_factor) < inter_report.total_energy;
@@ -1577,7 +1577,7 @@ retry:
 
         score = hier_metr(level, src_block->data, src_block->stride,
                 DSV_GET_XY(rp, bx + tvx, by + tvy), rp->stride, bw, bh, psy);
-        if (hme->enc->do_chroma_me && level != 0) {
+        if (hme->enc->do_chroma_me && level != 0 && cbw && cbh) {
             int cpl, hs, vs;
             int cbmx, cbmy;
             unsigned cscore = 0;
@@ -1624,7 +1624,7 @@ retry:
     }
     score = hier_metr(level, src_block->data, src_block->stride,
             DSV_GET_XY(rp, bx + tvx, by + tvy), rp->stride, bw, bh, psy);
-    if (hme->enc->do_chroma_me && level != 0) {
+    if (hme->enc->do_chroma_me && level != 0 && cbw && cbh) {
         int cpl, hs, vs;
         int cbmx, cbmy;
         unsigned cscore = 0;
@@ -1696,7 +1696,7 @@ refine_level(DSV_HME *hme, int level, int gx, int gy)
     }
 
     step = 1 << level;
-    parent_mask = ~((step << 1) - 1);
+    parent_mask = ~(unsigned) ((step << 1) - 1);
 
     for (j = 0; j < nyb; j += step) {
         for (i = 0; i < nxb; i += step) {
@@ -1842,7 +1842,7 @@ refine_level(DSV_HME *hme, int level, int gx, int gy)
                 score = hier_metr(level, srcp.data, srcp.stride,
                         DSV_GET_XY(rp, bx + dx, by + dy),
                         rp->stride, bw, bh, &psy);
-                if (hme->enc->do_chroma_me && level != 0) {
+                if (hme->enc->do_chroma_me && level != 0 && cbw && cbh) {
                     int cbmx, cbmy;
                     int cpl;
                     unsigned cscore = 0;
@@ -2215,9 +2215,9 @@ dsv_intra_analysis(DSV_FRAME *src, DSV_PARAMS *params, uint8_t *sb_facs)
 
             mv = &ba[i + j * nxb];
 
-            mv->flags &= ~(1 << DSV_MV_BIT_SKIP);
-            mv->flags &= ~(1 << DSV_MV_BIT_MAINTAIN);
-            mv->flags &= ~(1 << DSV_MV_BIT_RINGING);
+            mv->flags &= ~(unsigned) (1 << DSV_MV_BIT_SKIP);
+            mv->flags &= ~(unsigned) (1 << DSV_MV_BIT_MAINTAIN);
+            mv->flags &= ~(unsigned) (1 << DSV_MV_BIT_RINGING);
 
             if ((bx >= src->width) || (by >= src->height)) {
                 continue;

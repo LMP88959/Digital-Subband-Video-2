@@ -63,14 +63,14 @@ extern "C" {
 #define CLAMP(x, a, b) ((x) < (a) ? (a) : ((x) > (b) ? (b) : (x)))
 #endif
 #define DSV_ROUND_SHIFT(x, shift) (((x) + (1 << (shift)) - 1) >> (shift))
-#define DSV_ROUND_POW2(x, pwr) (((x) + (1 << (pwr)) - 1) & ((unsigned)(~0) << (pwr)))
+#define DSV_ROUND_POW2(x, pwr) (((unsigned)(x) + ((unsigned) 1 << (pwr)) - (unsigned) 1) & ~(((unsigned) 1 << (pwr)) - (unsigned) 1))
 #define DSV_UDIV_ROUND_UP(a,b) (((a) + (b) - 1) / (b))
 #define DSV_UDIV_ROUND(a,b) (((a) + ((b) / 2)) / (b))
 #define DSV_UAVG4(a, b, c, d) ((unsigned) ((a) + (b) + (c) + (d) + 2) >> 2)
 #define DSV_SIGNOF(x) (((x) > 0) - ((x) < 0))
 
 #define DSV_S2U(v) ((unsigned) ((2 * (v)) ^ ((v) < 0 ? ~0 : 0)))
-#define DSV_U2S(v) (((unsigned) (v) >> 1) ^ (-((unsigned) (v) & 1)))
+#define DSV_U2S(v) (((v) & (unsigned) 1) ? -(int)(((v) >> 1) + 1u) : (int) ((v) >> 1))
 
 /* portable sar - shift arithmetic right, or floordiv_pow2 */
 #if DSV_PORTABLE
@@ -222,7 +222,7 @@ typedef struct {
 #define DSV_MV_IS_NOXMITC(mv)   ((mv)->flags & (1 << DSV_MV_BIT_NOXMITC))
 #define DSV_MV_IS_SIMCMPLX(mv)  ((mv)->flags & (1 << DSV_MV_BIT_SIMCMPLX))
 
-#define DSV_BIT_SET(v, b, on) ((v) &= ~(1 << (b)), (v) |= ((on) << (b)))
+#define DSV_BIT_SET(v, b, on) ((v) &= ~(unsigned) (1 << (b)), (v) |= ((on) << (b)))
 #define DSV_MV_SET_INTRA(mv, b)     (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_INTRA, b))
 #define DSV_MV_SET_EPRM(mv, b)      (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_EPRM, b))
 #define DSV_MV_SET_MAINTAIN(mv, b)  (DSV_BIT_SET((mv)->flags, DSV_MV_BIT_MAINTAIN, b))

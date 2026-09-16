@@ -1466,7 +1466,7 @@ extern void
 dsv_enc_init(DSV_ENCODER *enc)
 {
     memset(enc, 0, sizeof(*enc));
-    enc->prev_gop = -1;
+    enc->prev_gop = ~(DSV_FNUM) 0;
 
     /* default config */
     enc->quality = DSV_QUALITY_PERCENT(80);
