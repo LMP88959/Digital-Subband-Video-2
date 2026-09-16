@@ -545,21 +545,20 @@ calc_EPRM(DSV_PLANE *src, DSV_PLANE *mvr, int avg_src, int avg_ref,
     uint8_t *srcp = src->data;
     uint8_t *mvrp = mvr->data;
 
-    avg_src -= 128;
-    avg_ref -= 128;
-
     for (j = 0; j < h; j++) {
         for (i = 0; i < w; i++) {
-            int s = srcp[i];
+            int sp = srcp[i];
+            int mp = mvrp[i];
+
             /* see if MV pred or intra pred would clip and require EPRM */
             if (!clipr) {
-                clipr = ((s - mvrp[i]) + 128) & ~0xff;
+                clipr = sp < mp - 128 || sp > mp + 127;
             }
             if (!clipi) {
-                clipi = (s - avg_ref) & ~0xff;
+                clipi = avg_ref > sp + 128 || avg_ref < sp - 127;
             }
             if (!clipd) {
-                clipd = (s - avg_src) & ~0xff;
+                clipd = avg_src > sp + 128 || avg_src < sp - 127;
             }
             if (clipi && clipd && clipr) {
                 *eprmi = 1;
@@ -2002,10 +2001,10 @@ refine_level(DSV_HME *hme, int level, int gx, int gy)
                  * ref = reconstructed ref frame block at full-pel motion (x, y)
                  */ {
                     DSV_PLANE refp, ogrp;
-                    unsigned var_ref, avg_ref;
+                    unsigned var_ref = 0, avg_ref = 0;
                     unsigned carea;
                     int cbmx, cbmy;
-                    int eprmi, eprmd, eprmr;
+                    int eprmi = 0, eprmd = 0, eprmr = 0;
                     int neidif, oob_vector; /* out of bounds */
                     unsigned ratio = 1 << 5; /* ratio of subpel_min_err / fullpel_min_err */
                     DSV_MV *refmv = NULL;

@@ -1167,7 +1167,6 @@ encode_picture(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_BUF *output_buf)
     int i, width, height;
     DSV_MV *intramv = NULL;
     int stats[DSV_MAX_STAT];
-    int inter_filter;
 
     width = enc->vidmeta.width;
     height = enc->vidmeta.height;
@@ -1225,9 +1224,7 @@ encode_picture(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_BUF *output_buf)
     if (d->params.has_ref) {
         dsv_bs_put_bit(&bs, stats[DSV_MODE_STAT]);
         dsv_bs_put_bit(&bs, stats[DSV_EPRM_STAT]);
-
-        inter_filter = (enc->do_inter_filter != 0);
-        dsv_bs_put_bit(&bs, inter_filter);
+        dsv_bs_put_bit(&bs, (enc->do_inter_filter != 0));
     } else {
         dsv_bs_put_bit(&bs, stats[DSV_MAINTAIN_STAT]);
         dsv_bs_put_bit(&bs, stats[DSV_RINGING_STAT]);
@@ -1288,7 +1285,7 @@ encode_picture(DSV_ENCODER *enc, DSV_ENCDATA *d, DSV_BUF *output_buf)
         dsv_add_res(d->final_mvs, &fm, d->quant,
                 d->residual,
                 d->prediction,
-                inter_filter);
+                (enc->do_inter_filter != 0));
     }
 }
 
