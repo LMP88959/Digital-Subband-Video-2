@@ -194,6 +194,7 @@ dsv_y4m_read_hdr(FILE *in, int *w, int *h, int *subsamp, int *framerate, int *as
     char line[256];
     int interlace = 0;
     int c = 0, res;
+    ssize_t tellpoint;
     *full_hdrsz = 0;
     if (fread(line, 1, sizeof(Y4M_HDR) - 1, in) != (sizeof(Y4M_HDR) - 1)) {
         DSV_ERROR(("Bad Y4M header"));
@@ -302,7 +303,13 @@ done:
     if (interlace != 'p') {
         DSV_WARNING(("DSV does not explicitly support interlaced video."));
     }
-    *full_hdrsz = ftell(in);
+    tellpoint = ftell(in);
+    if (tellpoint < 0) {
+        /* likely piping the data in */
+        *full_hdrsz = ~(size_t) 0;
+    } else {
+        *full_hdrsz = tellpoint;
+    }
     return 1;
 }
 
