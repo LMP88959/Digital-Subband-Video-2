@@ -459,8 +459,11 @@ inv_L2a_2d(DSV_SBC *tmp, DSV_SBC *in, int sW, int sH, int lvl, DSV_FMETA *fm)
 static void
 fwd(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int ovf_safety)
 {
-    DSV_SBC *os, *od, *dpLL, *dpLH, *dpHL, *dpHH;
-    int x, y, woff, hoff, ws, hs, oddw, oddh, idx;
+    int x, y, woff, hoff, ws, hs, oddw, oddh;
+    int x0, x1, x2, x3;
+    int n2x2_w, n2x2_h;
+    DSV_SBC *ll, *lh, *hl, *hh;
+    DSV_SBC *dpLL, *dpLH, *dpHL, *dpHH;
 
     woff = DSV_ROUND_SHIFT(width, lvl);
     hoff = DSV_ROUND_SHIFT(height, lvl);
@@ -469,46 +472,54 @@ fwd(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int ovf_safety)
     hs = DSV_ROUND_SHIFT(height, lvl - 1);
     oddw = ws & 1;
     oddh = hs & 1;
-    os = src;
-    od = dst;
+    n2x2_w = ws - oddw;
+    n2x2_h = hs - oddh;
 
     dpLL = dst;
     dpLH = dst + woff;
     dpHL = dst + hoff * width;
     dpHH = dst + woff + hoff * width;
-    for (y = 0; y < hs - oddh; y += 2) {
+    for (y = 0; y < n2x2_h; y += 2) {
         DSV_SBC *spA, *spB;
+
+        ll = dpLL;
+        lh = dpLH;
+        hl = dpHL;
+        hh = dpHH;
 
         spA = src + y * width;
         spB = spA + width;
-        for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
-            int x0, x1, x2, x3, s0, s1, d0, d1;
+        for (x = 0; x < n2x2_w; x += 2) {
+            int s0, s1, d0, d1;
 
-            x0 = spA[x + 0];
-            x1 = spA[x + 1];
-            x2 = spB[x + 0];
-            x3 = spB[x + 1];
+            x0 = spA[0];
+            x1 = spA[1];
+            x2 = spB[0];
+            x3 = spB[1];
 
             s0 = x0 + x1;
             s1 = x2 + x3;
             d0 = x0 - x1;
             d1 = x2 - x3;
 
-            dpLL[idx] = DSV_SAR(s0 + s1, ovf_safety); /* LL */
-            dpLH[idx] = d0 + d1; /* LH */
-            dpHL[idx] = s0 - s1; /* HL */
-            dpHH[idx] = d0 - d1; /* HH */
+            ll[0] = DSV_SAR(s0 + s1, ovf_safety); /* LL */
+            lh[0] = d0 + d1;                      /* LH */
+            hl[0] = s0 - s1;                      /* HL */
+            hh[0] = d0 - d1;                      /* HH */
+
+            ll++;
+            lh++;
+            hl++;
+            hh++;
+
+            spA += 2;
+            spB += 2;
         }
         if (oddw) {
-            int x0, x2, s, d;
-
-            x0 = spA[ws - 1];
-            x2 = spB[ws - 1];
-            s = x0 + x2;
-            d = x0 - x2;
-
-            dpLL[idx] = DSV_SAR(s * 2, ovf_safety); /* LL */
-            dpHL[idx] = d * 2; /* HL */
+            x0 = spA[0];
+            x2 = spB[0];
+            ll[0] = DSV_SAR((x0 + x2) * 2, ovf_safety); /* LL */
+            hl[0] = (x0 - x2) * 2;                      /* HL */
         }
         dpLL += width;
         dpLH += width;
@@ -517,23 +528,22 @@ fwd(DSV_SBC *src, DSV_SBC *dst, int width, int height, int lvl, int ovf_safety)
     }
     if (oddh) {
         DSV_SBC *spA = src + (hs - 1) * width;
-        for (x = 0, idx = 0; x < ws - oddw; x += 2, idx++) {
-            int x0, x1, s, d;
-
-            x0 = spA[x + 0];
-            x1 = spA[x + 1];
-            s = x0 + x1;
-            d = x0 - x1;
-
-            dpLL[idx] = DSV_SAR(s * 2, ovf_safety); /* LL */
-            dpLH[idx] = d * 2; /* LH */
+        ll = dpLL;
+        lh = dpLH;
+        for (x = 0; x < n2x2_w; x += 2) {
+            x0 = spA[0];
+            x1 = spA[1];
+            ll[0] = DSV_SAR((x0 + x1) * 2, ovf_safety); /* LL */
+            lh[0] = (x0 - x1) * 2;                      /* LH */
+            ll++;
+            lh++;
+            spA += 2;
         }
         if (oddw) {
-            int x0 = spA[ws - 1];
-            dpLL[idx] = DSV_SAR(x0 * 4, ovf_safety); /* LL */
+            ll[0] = DSV_SAR(spA[0] * 4, ovf_safety); /* LL */
         }
     }
-    cpysub(os, od, ws, hs, width);
+    cpysub(src, dst, ws, hs, width);
 }
 
 static int
