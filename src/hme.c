@@ -120,9 +120,6 @@ clamp_u8(int v)
 
 #define HP_STRIDE (SP_DIM * 2)
 #define QP_STRIDE (SP_DIM * 4)
-#define METRIC_RETURN_PSY(a, w, h) (iisqrt(a)*(w)*(h)/UAVG2(w,h))
-#define METRIC_RETURN_SSE(a, w, h) (iisqrt(a)*(w)*(h)/UAVG2(w,h))
-#define METRIC_RETURN_SAD(a, w, h) (a)
 
 static unsigned
 iisqrt(unsigned n)
@@ -170,15 +167,39 @@ sse_wxh(uint8_t *a, int as, uint8_t *b, int bs, int w, int h)
     return acc;
 }
 
-#define METR_CALC(acc) {                                                        \
-        int ta, tb, se;/* texture in block A, ~ block B, squared error */       \
+#define METRIC_RETURN_SAD(a, w, h) (a)
+#define METRIC_RETURN_SSE(a, w, h) (iisqrt(a)*(w)*(h)/UAVG2(w,h))
+#define METRIC_RETURN_PSY(a, w, h) (iisqrt(a)*(w)*(h)/UAVG2(w,h))
+
+#define METR_TEX_INTER(tex) do {                                                \
+        int d0, d1, d2, d3;                                                     \
+        int ht, vt, diag;                                                       \
+        d0 = a1 - b1;                                                           \
+        d1 = a2 - b2;                                                           \
+        d2 = a3 - b3;                                                           \
+        d3 = a4 - b4;                                                           \
+        ht = d3 - d0;                                                           \
+        vt = d1 - d2;                                                           \
+        diag = (d0 + d3) - (d1 + d2);                                           \
+        (tex) = (((SQR(ht) + SQR(vt)) << 2) + SQR(diag)) >> 4;                  \
+    } while (0)
+
+#define METR_TEX_INTRA(tex) do {                                                \
+        int ht, vt, diag;                                                       \
+        ht = a4 - a1;                                                           \
+        vt = a2 - a3;                                                           \
+        diag = (a1 + a4) - (a2 + a3);                                           \
+        (tex) = (((SQR(ht) + SQR(vt)) << 2) + SQR(diag)) >> 4;                  \
+    } while (0)
+
+#define METR_CALC(acc) do {                                                     \
+        int tex, se;/* texture, squared error */                                \
         se = DSV_UAVG4(SQR(a1 - b1), SQR(a2 - b2), SQR(a3 - b3), SQR(a4 - b4)); \
-        ta = AVG4((a1 - a2), (a3 - a4), (a3 - a1), (a4 - a2));                  \
-        tb = AVG4((b1 - b2), (b3 - b4), (b3 - b1), (b4 - b2));                  \
+        METR_TEX_INTER(tex);                                                    \
         (acc) += se << psy->err_weight;                                         \
-        (acc) += SQR(ta - tb) << psy->tex_weight;                               \
+        (acc) += tex << psy->tex_weight;                                        \
         (acc) += SQR(s0 - s1) << psy->avg_weight;                               \
-}
+} while (0)
 
 static unsigned
 metr_wxh(uint8_t *a, int as, uint8_t *b, int bs, int w, int h, PSY_COEFS *psy)
@@ -208,66 +229,6 @@ metr_wxh(uint8_t *a, int as, uint8_t *b, int bs, int w, int h, PSY_COEFS *psy)
         b += 2 * bs;
     }
     return METRIC_RETURN_PSY(acc, w, h);
-}
-
-static unsigned
-intra_metr_wxh(uint8_t *a, int as, int dc, int w, int h, PSY_COEFS *psy)
-{
-#if METRIC_MODE == METRIC_MODE_SAD
-    {
-        int i, j;
-        unsigned acc = 0;
-        for (j = 0; j < h ; j++) {
-            for (i = 0; i < w; i++) {
-                int dif = (a[i] - dc);
-                acc += abs(dif);
-            }
-            a += as;
-        }
-        (void) psy;
-        return METRIC_RETURN_SAD(acc, w, h);
-    }
-#elif METRIC_MODE == METRIC_MODE_SSE
-    {
-        int i, j;
-        unsigned acc = 0;
-        for (j = 0; j < h ; j++) {
-            for (i = 0; i < w; i++) {
-                int dif = (a[i] - dc);
-                acc += dif * dif;
-            }
-            a += as;
-        }
-        (void) psy;
-        return METRIC_RETURN_SSE(acc, w, h);
-    }
-#elif METRIC_MODE == METRIC_MODE_PSY
-    int i, j;
-    unsigned acc = 0;
-    for (j = 0; j < h / 2; j++) {
-        uint8_t *acur = a;
-        uint8_t *anxt = a + as;
-        for (i = 0; i < w / 2; i++) {
-            int a1, a2, a3, a4, s0, s1;
-            a1 = *acur++;
-            a2 = *acur++;
-            a3 = *anxt++;
-            a4 = *anxt++;
-            s0 = DSV_UAVG4(a1, a2, a3, a4);
-            s1 = dc;
-            {
-                int ta, se;/* texture in block A, ~ block B, squared error */
-                se = ((unsigned) (SQR(a1 - dc) + SQR(a2 - dc) + SQR(a3 - dc) + SQR(a4 - dc) + 2) >> 2);
-                ta = AVG4((a1 - a2), (a3 - a4), (a3 - a1), (a4 - a2));
-                acc += se << psy->err_weight;
-                acc += SQR(ta) << psy->tex_weight;
-                acc += SQR(s0 - s1) << psy->avg_weight;
-            };
-        }
-        a += 2 * as;
-    }
-    return METRIC_RETURN_PSY(acc, w, h);
-#endif
 }
 
 static unsigned
@@ -318,6 +279,65 @@ qpsad(uint8_t *a, int as, uint8_t *b, PSY_COEFS *psy)
         a += 2 * as;
     }
     return METRIC_RETURN_PSY(acc, SP_SAD_SZ, SP_SAD_SZ);
+#endif
+}
+static unsigned
+intra_metr_wxh(uint8_t *a, int as, int dc, int w, int h, PSY_COEFS *psy)
+{
+#if METRIC_MODE == METRIC_MODE_SAD
+    {
+        int i, j;
+        unsigned acc = 0;
+        for (j = 0; j < h ; j++) {
+            for (i = 0; i < w; i++) {
+                int dif = (a[i] - dc);
+                acc += abs(dif);
+            }
+            a += as;
+        }
+        (void) psy;
+        return METRIC_RETURN_SAD(acc, w, h);
+    }
+#elif METRIC_MODE == METRIC_MODE_SSE
+    {
+        int i, j;
+        unsigned acc = 0;
+        for (j = 0; j < h ; j++) {
+            for (i = 0; i < w; i++) {
+                int dif = (a[i] - dc);
+                acc += dif * dif;
+            }
+            a += as;
+        }
+        (void) psy;
+        return METRIC_RETURN_SSE(acc, w, h);
+    }
+#elif METRIC_MODE == METRIC_MODE_PSY
+    int i, j;
+    unsigned acc = 0;
+    for (j = 0; j < h / 2; j++) {
+        uint8_t *acur = a;
+        uint8_t *anxt = a + as;
+        for (i = 0; i < w / 2; i++) {
+            int a1, a2, a3, a4, s0, s1;
+            a1 = *acur++;
+            a2 = *acur++;
+            a3 = *anxt++;
+            a4 = *anxt++;
+            s0 = DSV_UAVG4(a1, a2, a3, a4);
+            s1 = dc;
+            {
+                int tex, se;/* texture, squared error */
+                se = ((unsigned) (SQR(a1 - dc) + SQR(a2 - dc) + SQR(a3 - dc) + SQR(a4 - dc) + 2) >> 2);
+                METR_TEX_INTRA(tex);
+                acc += se << psy->err_weight;
+                acc += tex << psy->tex_weight;
+                acc += SQR(s0 - s1) << psy->avg_weight;
+            };
+        }
+        a += 2 * as;
+    }
+    return METRIC_RETURN_PSY(acc, w, h);
 #endif
 }
 
