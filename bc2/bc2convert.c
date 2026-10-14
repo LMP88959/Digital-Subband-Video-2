@@ -188,7 +188,7 @@ main(int argc, char **argv)
     int lum_w, lum_h, chr_w, chr_h, luma_sz, chroma_sz;
     int out_format = OUT_RGB;
     int color_matrix = YC_BT601;
-    int inp_range = RANGE_FULL;
+    int inp_range = RANGE_LIMITED;
     int out_range = RANGE_LIMITED;
     int max_frames = -1;
     int frames_decoded = 0;
@@ -291,7 +291,7 @@ main(int argc, char **argv)
         fprintf(stderr, "  <out_name>         output file path (- for stdout)\n");
         fprintf(stderr, "optional:\n");
         fprintf(stderr, "  -o rgb|ppm|y4m     output stream format. default=rgb\n");
-        fprintf(stderr, "  -ir full|limited   specify range of input BC2 stream. default=full\n");
+        fprintf(stderr, "  -ir full|limited   specify range of input BC2 stream. default=limited\n");
         fprintf(stderr, "  -or full|limited   specify range of output Y4M stream (used for Y4M output). default=limited\n");
         fprintf(stderr, "  -m 601|709         YCbCr color matrix (used for Y4M output). default=601)\n");
         fprintf(stderr, "  -n nfr             only process a specific number of frames\n");
