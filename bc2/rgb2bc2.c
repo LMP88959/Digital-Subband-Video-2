@@ -1,6 +1,6 @@
 /*****************************************************************************/
 /*
- * BC2 Color Space Conversion Library
+ * Convert raw 24-bit RGB stream to a BC2 Y4M file
  *
  *     -
  *    =--  2025-2026 EMMIR
@@ -30,6 +30,8 @@
  * limitations under the License.
  */
 
+/* compile with: cc -O3 -o rgb2bc2 bc2.c rgb2bc2.c */
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -54,69 +56,6 @@ static uint8_t *tmp1, *tmp2;
 static int limited_luma = 1;
 static int readingstdio = 0;
 static int fancy_subsampling = 1;
-
-static int
-readrgb(FILE *in, int fno, int width, int height)
-{
-    uint32_t npix, offset;
-    int ret = 0;
-    if (in == NULL || fno < 0) {
-        return -1;
-    }
-    npix = width * height * 3;
-    offset = fno * npix;
-    if (!readingstdio) {
-        if (fseek(in, offset, SEEK_SET)) {
-            fprintf(stderr, "seek error\n");
-            ret = -1; goto err;
-        }
-    }
-    if (fread(rgb, 1, npix, in) != npix) {
-        fprintf(stderr, "didnt read enough pixels\n");
-        ret = -1; goto err;
-    }
-err:
-    return ret;
-}
-
-static int
-writebc2(FILE *out, int width, int height, int subsamp)
-{
-    uint32_t npix, chrsz;
-    int ret = 0;
-    if (out == NULL)
-        return -1;
-    npix = width * height;
-    switch (subsamp) {
-        case FMT_444:
-            chrsz = npix;
-            break;
-        case FMT_422:
-            chrsz = (width / 2) * height;
-            break;
-        case FMT_420:
-        case FMT_411:
-            chrsz = npix / 4;
-            break;
-        case FMT_410:
-            chrsz = npix / 16;
-            break;
-        default:
-            perror("selected format is currently unsupported for writing");
-            exit(-1);
-            break;
-    }
-    if (fwrite(bc2, 1, npix, out) != npix) {
-        fprintf(stderr, "e\n");
-        ret = -1; goto err;
-    }
-    if (fwrite(bc2 + npix, 1, chrsz * 2, out) != (chrsz * 2)) {
-        fprintf(stderr, "f\n");
-        ret = -1; goto err;
-    }
-err:
-    return ret;
-}
 
 #define UAVG2(a, b) ((unsigned) ((a) + (b) + 1) >> 1)
 #define UAVG4(a, b, c, d) ((unsigned) ((a) + (b) + (c) + (d) + 2) >> 2)
@@ -360,7 +299,6 @@ rgb2bc2_411(int width, int height)
             }
         }
     }
-
 }
 
 static void
@@ -390,6 +328,68 @@ rgb2bc2_444(int width, int height)
         }
         rgbp += pitch;
     }
+}
+
+static int
+readrgb(FILE *in, int fno, int width, int height)
+{
+    uint32_t npix, offset;
+    int ret = 0;
+    if (in == NULL || fno < 0) {
+        return -1;
+    }
+    npix = width * height * 3;
+    offset = fno * npix;
+    if (!readingstdio) {
+        if (fseek(in, offset, SEEK_SET)) {
+            fprintf(stderr, "seek error\n");
+            return -1;
+        }
+    }
+    if (fread(rgb, 1, npix, in) != npix) {
+        fprintf(stderr, "didnt read enough pixels\n");
+        return -1;
+    }
+    return 0;
+}
+
+static int
+writebc2(FILE *out, int width, int height, int subsamp)
+{
+    uint32_t npix, chrsz;
+
+    if (out == NULL) {
+        return -1;
+    }
+    npix = width * height;
+    switch (subsamp) {
+        case FMT_444:
+            chrsz = npix;
+            break;
+        case FMT_422:
+            chrsz = (width / 2) * height;
+            break;
+        case FMT_420:
+        case FMT_411:
+            chrsz = npix / 4;
+            break;
+        case FMT_410:
+            chrsz = npix / 16;
+            break;
+        default:
+            perror("selected format is currently unsupported for writing");
+            exit(-1);
+            break;
+    }
+    if (fwrite(bc2, 1, npix, out) != npix) {
+        fprintf(stderr, "e\n");
+        return -1;
+    }
+    if (fwrite(bc2 + npix, 1, chrsz * 2, out) != (chrsz * 2)) {
+        fprintf(stderr, "f\n");
+        return -1;
+    }
+    return 0;
 }
 
 static void
@@ -432,44 +432,146 @@ y4m_write_frame_hdr(FILE *out)
     fwrite(fh, 1, strlen(fh), out);
 }
 
+typedef struct {
+    char *str;
+    int val;
+} ARGPAIR;
+
+static int
+read_string_arg(char *arg, ARGPAIR *pairs, int npairs, int *outparam)
+{
+    int i;
+    for (i = 0; i < npairs; i++) {
+        if (strcmp(arg, pairs[i].str) == 0) {
+            *outparam = pairs[i].val;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+#define ARRLEN(arr) (sizeof(arr) / sizeof(arr[0]))
+
 int
 main(int argc, char **argv)
 {
     FILE *fin, *fout;
     char *fpref_in, *fpref_out;
-    int width, height, fps, format;
+    int width = 0, height = 0;
+    int fps_num = 30;
+    int fps_den = 1;
+    int format = FMT_420;
     int npix;
-    unsigned nfr = 0;
+    int max_frames = 0;
     unsigned fno = 0;
-    if (argc < 9) {
-        fprintf(stderr, "%s <width> <height> <fps> <format> <full_luma_range> <fancy_subsampling> <num_frames[0=inf]> <in_name> <out_name>\n", argv[0]);
-        fprintf(stderr, "all parameters are required and must be in the order listed.\n");
-        fprintf(stderr, "if <in_name> is -, stdin is used\n");
-        fprintf(stderr, "if <out_name> is -, stdout is used\n");
+    int i = 1;
 
-        fprintf(stderr, "---formats---\n");
-        fprintf(stderr, "0 = 444\n");
-        fprintf(stderr, "1 = 422\n");
-        fprintf(stderr, "2 = 420\n");
-        fprintf(stderr, "3 = 411\n");
-        fprintf(stderr, "4 = 410 (currently unimplemented)\n");
-        return EXIT_SUCCESS;
-    }
 #ifdef _WIN32
     _setmode(_fileno(stdin), _O_BINARY);
     _setmode(_fileno(stdout), _O_BINARY);
     _setmode(_fileno(stderr), _O_BINARY);
 #endif
-    width = atoi(argv[1]);
-    height = atoi(argv[2]);
-    fps = atoi(argv[3]);
-    format = atoi(argv[4]);
-    limited_luma = !atoi(argv[5]);
-    fancy_subsampling = !!atoi(argv[6]);
-    nfr = atoi(argv[7]);
-    fpref_in = argv[8];
-    fpref_out = argv[9];
-    fprintf(stderr, "reading: %s\nwriting: %s\n%dx%d\n", fpref_in, fpref_out, width, height);
+
+    while (i < argc && argv[i][0] == '-') {
+        if (argv[i][1] == '\0') {
+            /* just a -, assume it's for the stdin/stdout specification */
+            break;
+        } 
+        if (strcmp(argv[i], "-s") == 0) {
+            if (i + 2 >= argc) {
+                fprintf(stderr, "error: -s expects two integer arguments (width height)\n");
+                return EXIT_FAILURE;
+            }
+            width = atoi(argv[i + 1]);
+            height = atoi(argv[i + 2]);
+            i += 3;
+        } else if (strcmp(argv[i], "-fps") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "error: -fps expects an argument (num/den or num)\n");
+                return EXIT_FAILURE;
+            }
+            char *slash = strchr(argv[i + 1], '/');
+            if (slash) {
+                fps_num = atoi(argv[i + 1]);
+                fps_den = atoi(slash + 1);
+                if (fps_den <= 0) {
+                    fps_den = 1;
+                }
+            } else {
+                fps_num = atoi(argv[i + 1]);
+                fps_den = 1;
+            }
+            i += 2;
+        } else if (strcmp(argv[i], "-f") == 0) {
+            ARGPAIR pars[] = {
+                { "444", FMT_444 },
+                { "422", FMT_422 },
+                { "420", FMT_420 },
+                { "411", FMT_411 },
+                { "410", FMT_410 }
+            };
+            if (i + 1 >= argc) {
+                fprintf(stderr, "error: -f expects a format argument (444|422|420|411|410)\n");
+                return EXIT_FAILURE;
+            }
+            if (!read_string_arg(argv[i + 1], pars, ARRLEN(pars), &format)) {
+                fprintf(stderr, "error: invalid format '%s'.\n", argv[i + 1]);
+                return EXIT_FAILURE;
+            }
+            i += 2;
+        } else if (strcmp(argv[i], "-r") == 0) {
+            ARGPAIR pars[] = {
+                { "full", 0 },
+                { "limited", 1 }
+            };
+            if (i + 1 >= argc) {
+                fprintf(stderr, "error: -r expects an argument (full|limited)\n");
+                return EXIT_FAILURE;
+            }
+            if (!read_string_arg(argv[i + 1], pars, ARRLEN(pars), &limited_luma)) {
+                fprintf(stderr, "error: invalid range '%s'.\n", argv[i + 1]);
+                return EXIT_FAILURE;
+            }
+            i += 2;
+        } else if (strcmp(argv[i], "-fast") == 0) {
+            fancy_subsampling = 0;
+            i += 1;
+        } else if (strcmp(argv[i], "-n") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "error: -n expects an integer argument\n");
+                return EXIT_FAILURE;
+            }
+            max_frames = atoi(argv[i + 1]);
+            if (max_frames <= 0) {
+                fprintf(stderr, "error: invalid frame count '%s', note: it must be greater than 0.\n", argv[i + 1]);
+                return EXIT_FAILURE;
+            }
+            i += 2;
+        } else {
+            fprintf(stderr, "error: unknown option %s\n", argv[i]);
+            return EXIT_FAILURE;
+        }
+    }
+
+    if ((argc - i) < 2 || width <= 0 || height <= 0) {
+        fprintf(stderr, "%s -s <width> <height> [options] <in_name> <out_name>\n", argv[0]);
+        fprintf(stderr, "required:\n");
+        fprintf(stderr, "  -s width height    size of image/video (width & height)\n");
+        fprintf(stderr, "  <in_name>          input raw RGB stream (- for stdin)\n");
+        fprintf(stderr, "  <out_name>         output Y4M stream (- for stdout)\n");
+        fprintf(stderr, "optional:\n");
+        fprintf(stderr, "  -fps num[/den]     specify frame rate. default=30/1\n");
+        fprintf(stderr, "  -f format          subsampling format (444|422|420|411|410). default=420\n");
+        fprintf(stderr, "  -r range           specify range (full|limited). default=limited\n");
+        fprintf(stderr, "  -fast              use fast (lower quality) subsampling\n");
+        fprintf(stderr, "  -n nfr             only process a specific number of frames\n");
+        return EXIT_SUCCESS;
+    }
+
+    fpref_in = argv[i];
+    fpref_out = argv[i + 1];
+/*    fprintf(stderr, "reading: %s\nwriting: %s\n%dx%d\n", fpref_in, fpref_out, width, height); */
+    
     if (fpref_in[0] == USE_STDIO_CHAR) {
         fin = stdin;
         readingstdio = 1;
@@ -497,8 +599,8 @@ main(int argc, char **argv)
     tmp1 = calloc(1, npix * 3);
     tmp2 = calloc(1, npix * 3);
     bc2_init();
-    y4m_write_hdr(fout, width, height, format, fps, 1, 1, 1);
-    while ((nfr ? fno <= nfr : 1) && readrgb(fin, fno, width, height) >= 0) {
+    y4m_write_hdr(fout, width, height, format, fps_num, fps_den, 1, 1);
+    while ((max_frames ? fno < max_frames : 1) && readrgb(fin, fno, width, height) >= 0) {
         y4m_write_frame_hdr(fout);
         switch (format) {
             case FMT_444:
@@ -514,14 +616,15 @@ main(int argc, char **argv)
                 rgb2bc2_411(width, height);
                 break;
             default:
-                perror("selected format is currently unsupported for writing");
+                fprintf(stderr, "selected format is currently unsupported for writing\n");
                 exit(-1);
                 break;
         }
         writebc2(fout, width, height, format);
         fno++;
     }
-    fprintf(stderr, "processed %d frames\n", fno);
+ /*   fprintf(stderr, "processed %d frames\n", fno); */
+    
     free(rgb);
     free(bc2);
     free(tmp1);
