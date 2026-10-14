@@ -441,7 +441,7 @@ main(int argc, char **argv)
                     br = bc2buf[0][idx];
                     cs = cs_444[idx];
                     ci = ci_444[idx];
-                    BC2_TO_SRGB(br, cs, ci, r, g, b, inp_range);
+                    BC2_TO_SRGB(br, cs, ci, r, g, b, !inp_range);
                     rgbimg[idx * 3 + 0] = CLAMP(r, 0, 255);
                     rgbimg[idx * 3 + 1] = CLAMP(g, 0, 255);
                     rgbimg[idx * 3 + 2] = CLAMP(b, 0, 255);
@@ -470,7 +470,7 @@ main(int argc, char **argv)
                     cs = bc2buf[1][chroma_idx];
                     ci = bc2buf[2][chroma_idx];
 
-                    BC2_TO_SRGB(br, cs, ci, r, g, b, inp_range);
+                    BC2_TO_SRGB(br, cs, ci, r, g, b, !inp_range);
                     if (color_matrix == YC_BT709) {
                         if (out_range == RANGE_LIMITED) {
                             yy = (( 3000 * r + 10101 * g + 1020 * b + 8192) >> 14) + 16;
